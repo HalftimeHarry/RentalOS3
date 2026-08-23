@@ -6,6 +6,19 @@ export class PocketBaseProvider {
 
   constructor(url = env.PUBLIC_POCKETBASE_URL || 'http://127.0.0.1:8090') {
     this.client = new PocketBase(url);
+
+    const adminEmail = env.PUBLIC_POCKETBASE_LOGIN;
+    const adminPassword = env.PUBLIC_POCKETBASE_PASS;
+
+    if (adminEmail && adminPassword) {
+      void this.client.collection('users').authWithPassword(adminEmail, adminPassword)
+        .then((auth) => {
+          console.log('[pocketbase] env admin login ok:', auth.record?.email, auth.record?.role);
+        })
+        .catch((error) => {
+          console.error('[pocketbase] env admin login failed:', error);
+        });
+    }
   }
 }
 

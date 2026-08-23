@@ -10,10 +10,18 @@ export interface User {
 
 export interface Rental {
   id: string;
+  collectionId?: string;
+  collectionName?: string;
   address: string;
   rent: number;
   photos: string[];
-  renter?: User;
+  bills?: string[];
+  renter?: User | string;
+  created?: string;
+  updated?: string;
+  expand?: {
+    renter?: User;
+  };
 }
 
 export interface Bill {
