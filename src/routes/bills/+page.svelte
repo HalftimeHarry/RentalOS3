@@ -1,0 +1,25 @@
+<script lang="ts">
+  import { onMount } from 'svelte';
+  import { Check, Pencil, Plus, Trash2, X } from '@lucide/svelte';
+  import { pocketbase } from '$lib/pocketbase/PocketBaseProvider';
+  import { billService } from '$lib/services/BillService';
+  import { rentalService } from '$lib/services/RentalService';
+  import type { Bill, Rental } from '$lib/models';
+
+  let bills = $state<Bill[]>([]); let rental = $state<Rental | null>(null); let showForm = $state(false); let editingId = $state<string | undefined>(); let error = $state('');
+  let form = $state({ rent: 0, sdge: 0, att: 0, dueDate: '', paid: false, paidDate: '', notes: '' });
+  let isAdmin = $derived(pocketbase.client.authStore.model?.role === 'admin');
+  const money = (value: number) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(value);
+  const month = (date: string) => new Date(date).toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+  onMount(async () => { rental = await rentalService.getCurrent(); try { bills = await billService.list(rental?.id); } catch { error = 'Connect PocketBase to load bills.'; } });
+  function openForm(bill?: Bill) { editingId = bill?.id; form = bill ? { rent: bill.rent, sdge: bill.sdge, att: bill.att, dueDate: bill.dueDate, paid: bill.paid, paidDate: bill.paidDate ?? '', notes: bill.notes ?? '' } : { rent: rental?.rent ?? 0, sdge: 0, att: 0, dueDate: '', paid: false, paidDate: '', notes: '' }; showForm = true; }
+  async function save() { if (!rental) return; try { await billService.save({ ...form, rental: rental.id }, editingId); bills = await billService.list(rental.id); showForm = false; } catch { error = 'Could not save this bill.'; } }
+  async function markPaid(bill: Bill) { await billService.save({ ...bill, paid: true, paidDate: new Date().toISOString().slice(0, 10) }, bill.id); bills = await billService.list(rental?.id); }
+  async function remove(bill: Bill) { if (!confirm(`Delete the ${month(bill.dueDate)} bill?`)) return; await billService.delete(bill.id); bills = bills.filter((item) => item.id !== bill.id); }
+</script>
+<svelte:head><title>Bills · RentalOS3</title></svelte:head>
+<div class="page-header"><div><p class="page-kicker">Monthly costs</p><h1>Bills</h1><p class="muted">A clear record of rent and utilities.</p></div>{#if isAdmin}<button class="button" onclick={() => openForm()}><Plus size={16} /> New bill</button>{/if}</div>
+{#if error}<p class="form-error">{error}</p>{/if}
+{#if showForm}<section class="panel bill-form"><div class="panel-title"><h2>{editingId ? 'Edit bill' : 'New bill'}</h2><button class="icon-button" onclick={() => showForm = false} aria-label="Close"><X size={17} /></button></div><div class="form-grid"><label>Rent<input bind:value={form.rent} type="number" /></label><label>SDG&E<input bind:value={form.sdge} type="number" /></label><label>AT&T<input bind:value={form.att} type="number" /></label><label>Due date<input bind:value={form.dueDate} type="date" /></label></div><label class="notes">Notes<textarea bind:value={form.notes} rows="2"></textarea></label><p class="form-total">Calculated total <strong>{money(form.rent + form.sdge + form.att)}</strong></p><button class="button" onclick={save}>Save bill</button></section>{/if}
+{#if bills.length}<div class="table-wrap"><table><thead><tr><th>Month</th><th>Rent</th><th>SDG&E</th><th>AT&T</th><th>Total</th><th>Due date</th><th>Status</th>{#if isAdmin}<th></th>{/if}</tr></thead><tbody>{#each bills as bill}<tr><td><strong>{month(bill.dueDate)}</strong></td><td>{money(bill.rent)}</td><td>{money(bill.sdge)}</td><td>{money(bill.att)}</td><td><strong>{money(bill.total)}</strong></td><td>{new Date(bill.dueDate).toLocaleDateString()}</td><td><span class="pill {bill.paid ? 'paid' : 'unpaid'}">{bill.paid ? 'Paid' : 'Unpaid'}</span></td>{#if isAdmin}<td><div class="actions">{#if !bill.paid}<button class="icon-button" onclick={() => markPaid(bill)} aria-label="Mark paid"><Check size={16} /></button>{/if}<button class="icon-button" onclick={() => openForm(bill)} aria-label="Edit bill"><Pencil size={16} /></button><button class="icon-button" onclick={() => remove(bill)} aria-label="Delete bill"><Trash2 size={16} /></button></div></td>{/if}</tr>{/each}</tbody></table></div>{:else}<section class="panel empty"><h2>No bills yet</h2><p>Create the first monthly bill to start tracking costs.</p></section>{/if}
+<style>.form-error { color: #a14c3b; margin: 0 0 18px; }.bill-form { margin-bottom: 22px; }.bill-form h2 { margin: 0; }.form-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }.form-grid label, .notes { display: grid; gap: 7px; color: #71837c; font-size: 13px; }.form-grid input, textarea { width: 100%; box-sizing: border-box; border: 1px solid #d8e3d8; border-radius: 7px; padding: 10px; }.notes { margin: 15px 0; }.form-total { color: #71837c; }.form-total strong { margin-left: 8px; color: #183b35; font: 600 20px 'Space Grotesk'; }@media (max-width: 720px) { .form-grid { grid-template-columns: 1fr 1fr; } }</style>
