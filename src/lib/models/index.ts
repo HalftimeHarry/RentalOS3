@@ -1,6 +1,27 @@
+import { pocketbase } from '$lib/pocketbase/PocketBaseProvider';
+
 export type UserRole = 'admin' | 'renter';
 
 export const LA_TIMEZONE = 'America/Los_Angeles';
+
+export const normalizeRelationIds = (value: unknown): string[] => {
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => normalizeRelationIds(entry));
+  }
+
+  if (!value) return [];
+
+  if (typeof value === 'string') {
+    return value ? [value] : [];
+  }
+
+  if (typeof value === 'object' && 'id' in value) {
+    const id = (value as { id?: string | null }).id;
+    return id ? [id] : [];
+  }
+
+  return [];
+};
 
 export const formatDateForInput = (date = new Date()) => {
   const formatter = new Intl.DateTimeFormat('en-CA', {
@@ -134,7 +155,37 @@ export interface Bill {
   paidDate?: string;
   notes?: string;
   receipts?: string[];
+  recipts?: string[];
 }
+
+const resolveReceiptUrl = (record: Partial<Bill> | undefined, value: string) => {
+  if (!value) return '';
+
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  if (/^https?:\/\//i.test(trimmed) || trimmed.startsWith('data:') || trimmed.startsWith('blob:')) return trimmed;
+  if (trimmed.startsWith('/api/files/')) return `${pocketbase.client.baseUrl}${trimmed}`;
+  if (trimmed.startsWith('/')) return trimmed;
+
+  try {
+    if (record && typeof record === 'object' && 'id' in record && record.id) {
+      const fileName = trimmed.split('/').pop() ?? trimmed;
+      return pocketbase.client.files.getURL(record as Record<string, any>, fileName);
+    }
+  } catch {
+    // fall through to the raw value when we cannot resolve a PocketBase URL
+  }
+
+  return trimmed;
+};
+
+const normalizeReceiptRefs = (record: Partial<Bill> | undefined): string[] => {
+  const values = Array.isArray(record?.recipts) ? record.recipts : Array.isArray(record?.receipts) ? record.receipts : [];
+  return values
+    .filter((value): value is string => typeof value === 'string' && !!value)
+    .map((value) => resolveReceiptUrl(record, value))
+    .filter(Boolean);
+};
 
 export class BillRecord {
   static normalizeStatus(value?: Partial<Bill> | BillStatus | null): BillStatus {
@@ -146,6 +197,7 @@ export class BillRecord {
     const status = BillRecord.normalizeStatus(record);
     const dueDate = normalizeDateOnly(record.dueDate) || formatDateForInput();
     const paidDate = normalizeDateOnly(record.paidDate);
+    const receipts = normalizeReceiptRefs(record);
 
     const rent = Number(record.rent ?? 0);
     const sdge = Number(record.sdge ?? 0);
@@ -164,7 +216,8 @@ export class BillRecord {
       status,
       paidDate,
       notes: record.notes ?? '',
-      receipts: Array.isArray(record.receipts) ? record.receipts : []
+      receipts,
+      recipts: receipts
     };
   }
 
@@ -176,6 +229,7 @@ export class BillRecord {
     const dueDate = normalizeDateOnly(record.dueDate) || formatDateForInput();
     const paidDate = status === 'paid' ? (normalizeDateOnly(record.paidDate) || formatDateForInput()) : normalizeDateOnly(record.paidDate);
     const computedTotal = billTotal({ rent, sdge, att });
+    const receipts = normalizeReceiptRefs(record);
 
     return {
       ...record,
@@ -187,7 +241,8 @@ export class BillRecord {
       paid: status === 'paid',
       paidDate,
       total: computedTotal,
-      receipts: Array.isArray(record.receipts) ? record.receipts : []
+      receipts,
+      recipts: receipts
     };
   }
 }

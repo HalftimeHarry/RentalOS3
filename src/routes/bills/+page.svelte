@@ -18,6 +18,17 @@
   let isAdmin = $derived(pocketbase.client.authStore.model?.role === 'admin');
   const money = (value: number) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(value);
   const month = (date: string) => renderDateLabel(date, { month: 'long', year: 'numeric' });
+  const formatReceiptLabel = (value: string) => {
+    const name = value.split('/').pop() ?? value;
+    if (name.length <= 16) return name;
+    const dotIndex = name.lastIndexOf('.');
+    if (dotIndex > 0 && dotIndex > name.length - 6) {
+      const stem = name.slice(0, 11);
+      const ext = name.slice(dotIndex);
+      return `${stem}…${ext}`;
+    }
+    return `${name.slice(0, 16)}…`;
+  };
   const getBillStatus = (bill?: Partial<Bill> | null): BillStatus => {
     const status = bill?.status ?? (bill?.paid ? 'paid' : 'open');
     return status === 'paid' || status === 'open' || status === 'overdue' || status === 'void' ? status : 'open';
@@ -64,7 +75,6 @@
     if (!rental?.id) return;
 
     const nextPage = resetPage ? 1 : billPage.page;
-    const rentalFilter = `rental = "${rental.id}"`;
     const searchValue = billQuery.trim();
     const searchFilter = searchValue
       ? `notes ~ "${escapeFilterValue(searchValue)}" || id ~ "${escapeFilterValue(searchValue)}" || dueDate ~ "${escapeFilterValue(searchValue)}"`
@@ -73,7 +83,7 @@
     const pageResult = await billService.listPage(nextPage, billPage.perPage, {
       sort: '-dueDate',
       rentalId: rental.id,
-      filter: [rentalFilter, searchFilter].filter(Boolean).join(' && ')
+      filter: searchFilter
     });
 
     bills = pageResult.items;
@@ -98,7 +108,7 @@
   function openForm(bill?: Bill) {
     editingId = bill?.id;
     const status = getBillStatus(bill);
-    existingReceipts = bill?.receipts ?? [];
+    existingReceipts = bill?.receipts ?? bill?.recipts ?? [];
     receiptFiles = [];
     form = bill
       ? { id: bill.id, rent: bill.rent, sdge: bill.sdge, att: bill.att, total: bill.total ?? (bill.rent + bill.sdge + bill.att), dueDate: bill.dueDate, status, paid: status === 'paid', paidDate: bill.paidDate ?? '', notes: bill.notes ?? '' }
@@ -141,9 +151,9 @@
           <p class="receipt-label">Attached receipts</p>
           <div class="chip-list">
             {#each currentBill.receipts as receipt}
-              <button type="button" class="chip file-link" onclick={() => openReceiptModal(receipt)}>
+              <button type="button" class="chip file-link" onclick={() => openReceiptModal(receipt)} title={receipt.split('/').pop() ?? receipt}>
                 <span class="chip-icon">{#if isImageReceipt(receipt)}<FileImage size={12} />{:else}<FileText size={12} />{/if}</span>
-                {receipt.split('/').pop() ?? receipt}
+                {formatReceiptLabel(receipt)}
               </button>
             {/each}
           </div>

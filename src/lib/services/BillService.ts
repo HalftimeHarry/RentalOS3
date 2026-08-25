@@ -1,8 +1,17 @@
 import { pocketbase } from '$lib/pocketbase/PocketBaseProvider';
-import { BillRecord, type Bill } from '$lib/models';
+import { BillRecord, normalizeRelationIds, type Bill } from '$lib/models';
 
 const isAbortError = (error: unknown) => {
   return error instanceof Error && (error.name === 'AbortError' || error.message?.toLowerCase().includes('aborted'));
+};
+
+const getBillIdsFromRental = (rental: Record<string, any> | null | undefined) => {
+  const direct = normalizeRelationIds((rental as Record<string, any> | undefined)?.bills ?? []);
+  const expanded = Array.isArray((rental as Record<string, any> | undefined)?.expand?.bills)
+    ? normalizeRelationIds((rental as Record<string, any> | undefined)?.expand?.bills)
+    : [];
+
+  return Array.from(new Set([...direct, ...expanded]));
 };
 
 export class BillService {
@@ -15,64 +24,84 @@ export class BillService {
   }
 
   async listPage(page = 1, perPage = 50, options?: { sort?: string; filter?: string; rentalId?: string; status?: string }) {
-    const filterParts: string[] = [];
+    const rentalId = options?.rentalId;
+    const bills = rentalId ? await this.list(rentalId) : await this.list();
 
-    if (options?.rentalId) {
-      filterParts.push(`rental = "${options.rentalId}"`);
-    }
+    const normalized = bills.filter((bill) => {
+      if (options?.status && BillRecord.normalizeStatus(bill) !== options.status) return false;
+      if (!options?.filter) return true;
 
-    if (options?.status) {
-      filterParts.push(`status = "${options.status}"`);
-    }
+      const searchText = options.filter.trim();
+      if (!searchText) return true;
 
-    if (options?.filter) {
-      filterParts.push(options.filter);
-    }
-
-    const result = await pocketbase.client.collection('bill').getList<Bill>(page, perPage, {
-      sort: options?.sort ?? '-dueDate',
-      filter: filterParts.length ? filterParts.join(' && ') : undefined
+      const haystack = [bill.id, bill.notes ?? '', bill.dueDate].join(' ').toLowerCase();
+      return haystack.includes(searchText.toLowerCase());
     });
 
+    const totalItems = normalized.length;
+    const totalPages = Math.max(1, Math.ceil(totalItems / perPage));
+    const safePage = Math.min(Math.max(page, 1), totalPages);
+    const startIndex = (safePage - 1) * perPage;
+    const items = normalized.slice(startIndex, startIndex + perPage);
+
     return {
-      ...result,
-      items: result.items.map((bill) => this.hydrate(bill))
+      page: safePage,
+      perPage,
+      totalPages,
+      totalItems,
+      items
     };
   }
 
   async search(filter: string, sort = '-dueDate', rentalId?: string): Promise<Bill[]> {
-    const tickets = rentalId ? [`rental = "${rentalId}"`, filter] : [filter];
-    const result = await pocketbase.client.collection('bill').getFullList<Bill>({
-      sort,
-      filter: tickets.join(' && ')
-    });
+    const bills = rentalId ? await this.list(rentalId) : await this.list();
+    const normalized = filter.trim();
 
-    return result.map((bill) => this.hydrate(bill));
+    if (!normalized) return bills.sort((a, b) => (a.dueDate < b.dueDate ? 1 : -1));
+
+    return bills.filter((bill) => {
+      const haystack = [bill.id, bill.notes ?? '', bill.dueDate].join(' ').toLowerCase();
+      return haystack.includes(normalized.toLowerCase());
+    });
   }
 
   async list(rentalId?: string): Promise<Bill[]> {
     if (!rentalId) return [];
 
     try {
-      const result = await pocketbase.client.collection('bill').getFullList<Bill>({
-        sort: '-dueDate',
-        filter: `rental = "${rentalId}"`
-      });
+      const rental = await pocketbase.client.collection('rental').getOne(rentalId, { expand: 'bills' });
+      const billIds = getBillIdsFromRental(rental as Record<string, any>);
 
-      return result.map((bill) => this.hydrate(bill));
+      if (billIds.length) {
+        const records = await Promise.all(
+          billIds.map(async (id) => {
+            try {
+              return await pocketbase.client.collection('bill').getOne<Bill>(id);
+            } catch {
+              return null;
+            }
+          })
+        );
+
+        return records.filter(Boolean).map((bill) => this.hydrate(bill as Partial<Bill>)).sort((a, b) => (a.dueDate < b.dueDate ? 1 : -1));
+      }
+
+      const fallback = await pocketbase.client.collection('bill').getFullList<Bill>({ sort: '-dueDate' });
+      return fallback
+        .filter((bill) => String((bill as Partial<Bill>).rental ?? '') === String(rentalId))
+        .map((bill) => this.hydrate(bill))
+        .sort((a, b) => (a.dueDate < b.dueDate ? 1 : -1));
     } catch (error) {
       if (isAbortError(error)) return [];
 
-      console.warn('[BillService.list] filtered query failed; retrying without rental filter.', error);
+      console.warn('[BillService.list] rental bills lookup failed; retrying without relation filter.', error);
 
       try {
-        const fallback = await pocketbase.client.collection('bill').getFullList<Bill>({
-          sort: '-dueDate'
-        });
-
+        const fallback = await pocketbase.client.collection('bill').getFullList<Bill>({ sort: '-dueDate' });
         return fallback
           .filter((bill) => String((bill as Partial<Bill>).rental ?? '') === String(rentalId))
-          .map((bill) => this.hydrate(bill));
+          .map((bill) => this.hydrate(bill))
+          .sort((a, b) => (a.dueDate < b.dueDate ? 1 : -1));
       } catch (fallbackError) {
         console.error('[BillService.list] failed to load bills:', fallbackError);
         return [];
@@ -95,10 +124,12 @@ export class BillService {
 
   async save(data: Partial<Bill>, id?: string, receiptFiles: File[] = []) {
     const payload = this.prepareForSave(data);
+    const rentalId = typeof payload.rental === 'string' ? payload.rental : undefined;
+    const { rental, receipts, recipts, ...billFields } = payload as Partial<Bill> & { rental?: string; receipts?: string[]; recipts?: string[] };
     const formData = new FormData();
 
-    Object.entries(payload).forEach(([key, value]) => {
-      if (key === 'id' || key === 'receipts' || value === undefined || value === null) return;
+    Object.entries(billFields).forEach(([key, value]) => {
+      if (key === 'id' || value === undefined || value === null) return;
       if (Array.isArray(value)) {
         value.forEach((item) => formData.append(key, String(item)));
         return;
@@ -106,11 +137,36 @@ export class BillService {
       formData.append(key, String(value));
     });
 
+    const savedReceipts = Array.isArray(recipts) && recipts.length ? recipts : Array.isArray(receipts) ? receipts : [];
+    savedReceipts.forEach((item) => {
+      formData.append('recipts', String(item));
+    });
+
     receiptFiles.forEach((file) => {
       formData.append('recipts', file, file.name);
     });
 
-    return id ? pocketbase.client.collection('bill').update(id, formData) : pocketbase.client.collection('bill').create(formData);
+    if (id) {
+      return pocketbase.client.collection('bill').update(id, formData);
+    }
+
+    const created = await pocketbase.client.collection('bill').create(formData);
+
+    if (rentalId) {
+      try {
+        const rentalRecord = await pocketbase.client.collection('rental').getOne(rentalId, { expand: 'bills' });
+        const existingIds = getBillIdsFromRental(rentalRecord as Record<string, any>);
+        const nextIds = Array.from(new Set([...existingIds, String(created.id)]));
+
+        await pocketbase.client.collection('rental').update(rentalId, {
+          bills: nextIds
+        });
+      } catch (relationError) {
+        console.warn('[BillService.save] failed to attach bill to rental relation:', relationError);
+      }
+    }
+
+    return created;
   }
 
   async uploadReceipts(id: string, files: File[]) {

@@ -1,5 +1,5 @@
 import { pocketbase } from '$lib/pocketbase/PocketBaseProvider';
-import type { Rental } from '$lib/models';
+import { normalizeRelationIds, type Rental } from '$lib/models';
 
 const isAbortError = (error: unknown) => {
   return error instanceof Error && (error.name === 'AbortError' || error.message?.toLowerCase().includes('aborted'));
@@ -29,6 +29,20 @@ const normalizeRenterId = (rental: Partial<Rental> | null | undefined) => {
   return null;
 };
 
+const normalizeRentalRecord = (record: Partial<Rental>): Rental => {
+  const normalizedTenant = normalizeRelationIds((record as { tenant?: unknown }).tenant).at(0) ?? undefined;
+  const normalizedRenter = normalizeRelationIds((record as { renter?: unknown }).renter).at(0) ?? undefined;
+  const normalizedBills = normalizeRelationIds((record as { bills?: unknown }).bills);
+
+  return {
+    ...(record as Rental),
+    tenant: normalizedTenant,
+    renter: normalizedRenter,
+    bills: normalizedBills,
+    photos: Array.isArray(record.photos) ? record.photos.filter((photo): photo is string => typeof photo === 'string') : []
+  };
+};
+
 const getScopedRecords = (records: Rental[]) => {
   const userId = getCurrentUserId();
   const userRole = pocketbase.client.authStore.model?.role;
@@ -41,8 +55,8 @@ const getScopedRecords = (records: Rental[]) => {
 export class RentalService {
   async list(): Promise<Rental[]> {
     try {
-      const records = await pocketbase.client.collection('rental').getFullList({ sort: '-created', expand: 'tenant.user' });
-      return getScopedRecords(records as unknown as Rental[]);
+      const records = await pocketbase.client.collection('rental').getFullList({ sort: '-created', expand: 'tenant.user,bills' });
+      return getScopedRecords((records as Rental[]).map((record) => normalizeRentalRecord(record)));
     } catch (error) {
       if (isAbortError(error)) return [];
       console.error('[RentalService.list] failed to load rentals:', error);
@@ -54,8 +68,8 @@ export class RentalService {
     if (!id) return null;
 
     try {
-      const record = await pocketbase.client.collection('rental').getOne(id, { expand: 'tenant.user' });
-      const rental = record as unknown as Rental;
+      const record = await pocketbase.client.collection('rental').getOne(id, { expand: 'tenant.user,bills' });
+      const rental = normalizeRentalRecord(record as Partial<Rental>);
       const userId = getCurrentUserId();
       const userRole = pocketbase.client.authStore.model?.role;
 
@@ -76,9 +90,9 @@ export class RentalService {
     try {
       const records = await pocketbase.client.collection('rental').getFullList({
         sort: '-created',
-        expand: 'tenant.user'
+        expand: 'tenant.user,bills'
       });
-      const scoped = getScopedRecords(records as unknown as Rental[]);
+      const scoped = getScopedRecords((records as Rental[]).map((record) => normalizeRentalRecord(record)));
       return (scoped[0] as Rental | undefined) ?? null;
     } catch (error) {
       if (isAbortError(error)) return null;
