@@ -9,7 +9,11 @@
 		"preview": "vite preview",
 		"prepare": "svelte-kit sync || echo ''",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
-		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch"
+		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
+		"verify:pb": "node ./scripts/check-pocketbase-permissions.mjs",
+		"migrate:pb": "node ./scripts/migrate-pocketbase-schema.mjs",
+		"fix:rental-rules": "node ./scripts/fix-rental-collection-rules.mjs",
+		"fix:tenant-rules": "node ./scripts/fix-users-tenants-rules.mjs"
 	},
 	"devDependencies": {
 		"@sveltejs/adapter-auto": "^7.0.1",
