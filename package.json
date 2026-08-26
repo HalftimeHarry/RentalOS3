@@ -13,7 +13,11 @@
 		"verify:pb": "node ./scripts/check-pocketbase-permissions.mjs",
 		"migrate:pb": "node ./scripts/migrate-pocketbase-schema.mjs",
 		"fix:rental-rules": "node ./scripts/fix-rental-collection-rules.mjs",
-		"fix:tenant-rules": "node ./scripts/fix-users-tenants-rules.mjs"
+		"fix:tenant-rules": "node ./scripts/fix-users-tenants-rules.mjs",
+		"fix:maintenance-rules": "node ./scripts/fix-maintenance-rules.mjs",
+		"fix:maintenance-collection": "node ./scripts/fix-maintenance-collection.mjs",
+		"fix:maintenance-status": "node ./scripts/fix-maintenance-status.mjs",
+		"fix:inspections": "node ./scripts/fix-inspection-collection.mjs"
 	},
 	"devDependencies": {
 		"@sveltejs/adapter-auto": "^7.0.1",

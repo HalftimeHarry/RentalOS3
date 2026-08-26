@@ -1,9 +1,10 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { Check, FileImage, FileText, Pencil, Plus, Trash2, X } from '@lucide/svelte';
+  import { Check, FileImage, FileText, Pencil, Plus, Printer, Trash2, X } from '@lucide/svelte';
   import { pocketbase } from '$lib/pocketbase/PocketBaseProvider';
   import { billService } from '$lib/services/BillService';
   import { rentalService } from '$lib/services/RentalService';
+  import { renterService } from '$lib/services/RenterService';
   import { formatDateForInput, renderDateLabel, normalizeDateOnly, parseDateOnly } from '$lib/models';
   import type { Bill, BillStatus, Rental } from '$lib/models';
 
@@ -15,7 +16,9 @@
   let billPage = $state({ page: 1, perPage: 10, totalPages: 1, totalItems: 0 });
   let selectedReceiptUrl = $state<string | null>(null);
   let selectedReceiptName = $state('');
+  let renterStatus = $state<'applying' | 'active' | 'in-active'>('applying');
   let isAdmin = $derived(pocketbase.client.authStore.model?.role === 'admin');
+  let isActiveRenter = $derived(!isAdmin && renterStatus === 'active');
   const money = (value: number) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(value);
   const month = (date: string) => renderDateLabel(date, { month: 'long', year: 'numeric' });
   const formatReceiptLabel = (value: string) => {
@@ -39,6 +42,13 @@
   const statusTabs = $derived(['all', 'open', 'paid', 'overdue', 'void'] as const);
   let selectedStatus = $state<'all' | BillStatus>('all');
   const visibleBills = $derived(selectedStatus === 'all' ? bills : bills.filter((bill) => getBillStatus(bill) === selectedStatus));
+
+  function printBill(bill: Bill) {
+    const originalTitle = document.title;
+    document.title = `${month(bill.dueDate)} bill`;
+    window.print();
+    document.title = originalTitle;
+  }
   const shouldShowCurrentBill = $derived(selectedStatus === 'all' || selectedStatus === 'open');
   const emptyStateCopy = $derived.by(() => {
     switch (selectedStatus) {
@@ -97,8 +107,13 @@
 
   onMount(async () => {
     try {
+      const renterProfile = await renterService.getCurrent();
+      renterStatus = renterProfile?.status ?? 'applying';
+      if (!isAdmin && renterStatus === 'active') {
+        selectedStatus = 'open';
+      }
+
       rental = await rentalService.getCurrent();
-      console.debug('[bills page] loading bills', { rentalId: rental?.id, hasRental: !!rental });
       await loadBillsPage(true);
     } catch (loadError) {
       console.error('[bills page] failed to load bills', loadError);
@@ -194,7 +209,7 @@
     </label>
   </div>
   {#if visibleBills.length}
-    <div class="table-wrap"><table><thead><tr><th>Month</th><th>Rent</th><th>SDG&E</th><th>AT&T</th><th>Total</th><th>Due date</th><th>Paid date</th><th>Status</th><th>Receipts</th>{#if isAdmin}<th></th>{/if}</tr></thead><tbody>{#each visibleBills as bill}<tr><td><strong>{month(bill.dueDate)}</strong></td><td>{money(bill.rent)}</td><td>{money(bill.sdge)}</td><td>{money(bill.att)}</td><td><strong>{money(bill.total)}</strong></td><td>{renderDateLabel(bill.dueDate, { month: 'numeric', day: 'numeric', year: 'numeric' })}</td><td>{bill.paidDate ? renderDateLabel(bill.paidDate, { month: 'numeric', day: 'numeric', year: 'numeric' }) : '—'}</td><td><span class="pill {getBillStatus(bill) === 'paid' ? 'paid' : 'unpaid'}">{getBillStatus(bill) === 'paid' ? 'Paid' : 'Open'}</span></td><td>{#if bill.receipts?.length}<div class="receipt-cell">{#each bill.receipts as receipt}<a class="chip file-link" href={receipt} target="_blank" rel="noreferrer noopener" title={receipt.split('/').pop() ?? receipt}><span class="chip-icon">{#if isImageReceipt(receipt)}<FileImage size={12} />{:else}<FileText size={12} />{/if}</span>{(receipt.split('/').pop() ?? receipt).slice(0, 12)}{(((receipt.split('/').pop() ?? receipt).length > 12) ? '…' : '')}</a>{/each}</div>{:else}<span class="muted">—</span>{/if}</td>{#if isAdmin}<td><div class="actions">{#if getBillStatus(bill) !== 'paid'}<button class="icon-button" onclick={() => markPaid(bill)} aria-label="Mark paid"><Check size={16} /></button>{/if}<button class="icon-button" onclick={() => openForm(bill)} aria-label="Edit bill"><Pencil size={16} /></button><button class="icon-button" onclick={() => remove(bill)} aria-label="Delete bill"><Trash2 size={16} /></button></div></td>{/if}</tr>{/each}</tbody></table></div>
+    <div class="table-wrap"><table><thead><tr><th>Month</th><th>Rent</th><th>SDG&E</th><th>AT&T</th><th>Total</th><th>Due date</th><th>Paid date</th><th>Status</th><th>Receipts</th><th>Print</th>{#if isAdmin}<th></th>{/if}</tr></thead><tbody>{#each visibleBills as bill}<tr><td><strong>{month(bill.dueDate)}</strong></td><td>{money(bill.rent)}</td><td>{money(bill.sdge)}</td><td>{money(bill.att)}</td><td><strong>{money(bill.total)}</strong></td><td>{renderDateLabel(bill.dueDate, { month: 'numeric', day: 'numeric', year: 'numeric' })}</td><td>{bill.paidDate ? renderDateLabel(bill.paidDate, { month: 'numeric', day: 'numeric', year: 'numeric' }) : '—'}</td><td><span class="pill {getBillStatus(bill) === 'paid' ? 'paid' : 'unpaid'}">{getBillStatus(bill) === 'paid' ? 'Paid' : 'Open'}</span></td><td>{#if bill.receipts?.length}<div class="receipt-cell">{#each bill.receipts as receipt}<a class="chip file-link" href={receipt} target="_blank" rel="noreferrer noopener" title={receipt.split('/').pop() ?? receipt}><span class="chip-icon">{#if isImageReceipt(receipt)}<FileImage size={12} />{:else}<FileText size={12} />{/if}</span>{(receipt.split('/').pop() ?? receipt).slice(0, 12)}{(((receipt.split('/').pop() ?? receipt).length > 12) ? '…' : '')}</a>{/each}</div>{:else}<span class="muted">—</span>{/if}</td><td><button class="icon-button print-button" type="button" onclick={() => printBill(bill)} aria-label={`Print ${month(bill.dueDate)} bill`} title="Print bill"><Printer size={16} /></button></td>{#if isAdmin}<td><div class="actions">{#if getBillStatus(bill) !== 'paid'}<button class="icon-button" onclick={() => markPaid(bill)} aria-label="Mark paid"><Check size={16} /></button>{/if}<button class="icon-button" onclick={() => openForm(bill)} aria-label="Edit bill"><Pencil size={16} /></button><button class="icon-button" onclick={() => remove(bill)} aria-label="Delete bill"><Trash2 size={16} /></button></div></td>{/if}</tr>{/each}</tbody></table></div>
   {:else}
     <section class="panel empty"><h2>{emptyStateCopy.title}</h2><p>{emptyStateCopy.description}</p></section>
   {/if}

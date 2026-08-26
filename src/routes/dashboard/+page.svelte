@@ -9,7 +9,11 @@
   import { formatDateForInput, normalizeDateOnly, parseDateOnly, renderDateLabel } from '$lib/models';
   import type { Bill, BillStatus, Rental } from '$lib/models';
 
+  type TenantDocumentField = 'creditData' | 'appData' | 'damageData';
+
   let { data } = $props();
+
+  const tenantDocumentFields = ['creditData', 'appData', 'damageData'] as const satisfies readonly TenantDocumentField[];
 
   let rental = $state<Rental | null>(null);
   let rentals = $state<Rental[]>([]);
@@ -38,6 +42,7 @@
   });
   let activeBillRequestId = 0;
   let activeRentalRequestId = 0;
+  let dashboardLoadToken = 0;
   let selectedStatus = $state<'all' | BillStatus>('open');
   let statusTabs = $derived(['open', 'paid', 'overdue', 'void', 'all'] as const);
   const emptyBillState = $derived.by(() => {
@@ -56,6 +61,8 @@
   });
   let userRole = $derived((pocketbase.client.authStore.model?.role as string | undefined) ?? 'renter');
   let roleLabel = $derived(userRole === 'admin' ? 'Admin' : 'Renter');
+  let maintenanceIssues = $state<Array<{ id: string; created?: string; problem?: string; status?: string; image?: string | string[] }>>([]);
+  let maintenanceIssuesLoading = $state(false);
   let showTenantRecords = $state(false);
   let tenantStatusModal = $state<{
     tenantId: string;
@@ -67,6 +74,8 @@
   let selectedRentalForBill = $state<Rental | null>(null);
   let selectedReceiptUrl = $state<string | null>(null);
   let selectedReceiptName = $state('');
+  let selectedDocumentUrl = $state<string | null>(null);
+  let selectedDocumentName = $state('');
   let billError = $state('');
   let billForm = $state({
     rent: 0,
@@ -128,6 +137,18 @@
       .replace(/&#39;/gi, "'")
       .replace(/\s+/g, ' ')
       .trim();
+  const maintenanceStatusLabel = (status?: string) => {
+    switch (status) {
+      case 'active':
+        return 'Active';
+      case 'closed':
+        return 'Closed';
+      case 're-opend':
+        return 'Re-opened';
+      default:
+        return 'Reported';
+    }
+  };
   const getGreeting = () => {
     const now = new Date();
     const hour = now.getHours();
@@ -171,11 +192,48 @@
       });
   });
 
+  async function loadMaintenanceIssuesForCurrentRenter() {
+    const viewToken = ++dashboardLoadToken;
+
+    if (userRole === 'admin') {
+      maintenanceIssues = [];
+      return;
+    }
+
+    const tenantProfile = await renterService.getCurrent();
+    if (viewToken !== dashboardLoadToken || !tenantProfile?.id) {
+      maintenanceIssues = [];
+      return;
+    }
+
+    maintenanceIssuesLoading = true;
+
+    try {
+      const records = await pocketbase.client.collection('maintenance').getFullList({
+        sort: '-created',
+        filter: `tenant = "${tenantProfile.id}"`
+      });
+      if (viewToken !== dashboardLoadToken) return;
+      maintenanceIssues = records as Array<{ id: string; created?: string; problem?: string; status?: string; image?: string | string[] }>;
+    } catch (error) {
+      if (error instanceof Error && (error.name === 'AbortError' || error.message?.toLowerCase().includes('aborted'))) {
+        return;
+      }
+      console.error('[dashboard page] failed to load maintenance issues:', error);
+      maintenanceIssues = [];
+    } finally {
+      if (viewToken === dashboardLoadToken) {
+        maintenanceIssuesLoading = false;
+      }
+    }
+  }
+
   onMount(() => {
     const loadDashboardData = async () => {
+      const requestToken = ++dashboardLoadToken;
+
       try {
         if (!pocketbase.client.authStore.isValid) {
-          console.log('[dashboard page] user not authenticated yet; waiting for auth state');
           return;
         }
 
@@ -183,8 +241,7 @@
 
         if (userRole !== 'admin') {
           const currentRental = await rentalService.getCurrent();
-          if (requestId !== activeRentalRequestId) return;
-          console.log('[dashboard page] current rental loaded:', currentRental);
+          if (requestToken !== dashboardLoadToken || requestId !== activeRentalRequestId) return;
 
           if (currentRental) {
             rental = currentRental;
@@ -193,8 +250,7 @@
         }
 
         const list = await rentalService.list();
-        if (requestId !== activeRentalRequestId) return;
-        console.log('[dashboard page] rental list loaded:', list);
+        if (requestToken !== dashboardLoadToken || requestId !== activeRentalRequestId) return;
 
         if (list.length) {
           rentals = list;
@@ -214,34 +270,41 @@
 
         if (rental?.id && userRole === 'admin') {
           const current = await rentalService.getById(rental.id);
-          if (requestId !== activeRentalRequestId) return;
-          console.log('[dashboard page] selected rental:', current);
+          if (requestToken !== dashboardLoadToken || requestId !== activeRentalRequestId) return;
           if (current) rental = current;
         }
 
         if (userRole === 'admin') {
-          const tenantResult = await renterService.list({ page: 1, perPage: 50, sort: '-created' });
-          tenants = [...tenantResult.items]
-            .sort((a, b) => {
-              return tenantStatusPriority(a.status ?? 'applying') - tenantStatusPriority(b.status ?? 'applying')
-                || (a.tenant_name ?? a.expand?.user?.name ?? '').localeCompare(b.tenant_name ?? b.expand?.user?.name ?? '')
-                || (a.tenant_email ?? a.expand?.user?.email ?? '').localeCompare(b.tenant_email ?? b.expand?.user?.email ?? '');
-            })
-            .map((tenant) => ({
-              id: tenant.id,
-              tenant_name: tenant.tenant_name ?? tenant.expand?.user?.name ?? 'Unnamed tenant',
-              tenant_email: tenant.tenant_email ?? tenant.expand?.user?.email ?? 'No email on file',
-              status: tenant.status ?? 'applying',
-              user: tenant.user ?? '',
-              creditData: tenant.creditData ?? [],
-              appData: tenant.appData ?? [],
-              damageData: tenant.damageData ?? []
-            }));
+          try {
+            const tenantResult = await renterService.list({ page: 1, perPage: 50, sort: '-created' });
+            if (requestToken !== dashboardLoadToken || requestId !== activeRentalRequestId) return;
+            tenants = [...tenantResult.items]
+              .sort((a, b) => {
+                return tenantStatusPriority(a.status ?? 'applying') - tenantStatusPriority(b.status ?? 'applying')
+                  || (a.tenant_name ?? a.expand?.user?.name ?? '').localeCompare(b.tenant_name ?? b.expand?.user?.name ?? '')
+                  || (a.tenant_email ?? a.expand?.user?.email ?? '').localeCompare(b.tenant_email ?? b.expand?.user?.email ?? '');
+              })
+              .map((tenant) => ({
+                id: tenant.id,
+                tenant_name: tenant.tenant_name ?? tenant.expand?.user?.name ?? 'Unnamed tenant',
+                tenant_email: tenant.tenant_email ?? tenant.expand?.user?.email ?? 'No email on file',
+                status: tenant.status ?? 'applying',
+                user: tenant.user ?? '',
+                creditData: tenant.creditData ?? [],
+                appData: tenant.appData ?? [],
+                damageData: tenant.damageData ?? []
+              }));
+          } catch (error) {
+            console.error('[dashboard page] admin tenant query failed:', error);
+            tenants = [];
+          }
         } else {
           renterProfile = await renterService.getCurrent();
+          if (requestToken !== dashboardLoadToken || requestId !== activeRentalRequestId) return;
+          await loadMaintenanceIssuesForCurrentRenter();
         }
       } catch (error) {
-        const isAutoCancel = error instanceof Error && error.name === 'AbortError';
+        const isAutoCancel = error instanceof Error && (error.name === 'AbortError' || error.message?.toLowerCase().includes('aborted'));
         if (!isAutoCancel) console.error('[dashboard page] rental list fetch error:', error);
       }
     };
@@ -311,6 +374,21 @@
     selectedReceiptName = '';
   }
 
+  function openDocumentModal(field: TenantDocumentField, fileName: string) {
+    if (!renterProfile?.id || !fileName) return;
+    const tenantRecord = {
+      id: renterProfile.id,
+      user: renterProfile.user
+    } as Record<string, any>;
+    selectedDocumentUrl = pocketbase.client.files.getURL(tenantRecord, fileName);
+    selectedDocumentName = fileName;
+  }
+
+  function closeDocumentModal() {
+    selectedDocumentUrl = null;
+    selectedDocumentName = '';
+  }
+
   async function saveTenantStatus() {
     if (!tenantStatusModal) return;
 
@@ -352,14 +430,6 @@
 
     try {
       billError = '';
-      console.debug('[dashboard page] saving bill draft', {
-        rentalId: selectedRentalForBill.id,
-        rent: billForm.rent,
-        sdge: billForm.sdge,
-        att: billForm.att,
-        dueDate: billForm.dueDate,
-        notes: billForm.notes
-      });
 
       const createdBill = await billService.save({
         rental: selectedRentalForBill.id,
@@ -367,9 +437,6 @@
         status: 'open',
         paid: false
       });
-
-      const createdBillId = typeof createdBill === 'object' && createdBill && 'id' in createdBill ? String(createdBill.id) : '';
-      console.debug('[dashboard page] bill created', { createdBillId, rentalId: selectedRentalForBill.id });
 
       showBillModal = false;
       selectedRentalForBill = null;
@@ -382,6 +449,7 @@
 </script>
 <svelte:head><title>Overview · RentalOS3</title></svelte:head>
 <div class="page-header"><div><p class="page-kicker">{dayLabel}</p><h1>{greeting}</h1><p class="muted">Here is what needs your attention.</p><span class="role-badge">{roleLabel} role</span></div>{#if userRole === 'admin' || !!rental}<div class="header-actions">{#if userRole === 'admin'}<a class="button" href="/tenants">Manage Tenants <Users size={16} /></a>{/if}<a class="button" href="/bills">View all bills <ArrowUpRight size={16} /></a></div>{/if}</div>
+
 {#if userRole !== 'admin' && !rental}
   <section class="panel empty-state">
     <p class="page-kicker">Property status</p>
@@ -515,7 +583,9 @@
 
 {#if selectedReceiptUrl}
   <div class="receipt-modal-backdrop" onclick={closeReceiptModal} role="presentation">
-    <div class="receipt-modal" onclick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label={selectedReceiptName}>
+    <div class="receipt-modal" tabindex="0" onclick={(event) => event.stopPropagation()} onkeydown={(event) => {
+      if (event.key === 'Escape') closeReceiptModal();
+    }} role="dialog" aria-modal="true" aria-label={selectedReceiptName}>
       <div class="receipt-modal-header">
         <h3>{selectedReceiptName}</h3>
         <button class="icon-button" type="button" aria-label="Close receipt" onclick={closeReceiptModal}>×</button>
@@ -532,6 +602,82 @@
       {/if}
     </div>
   </div>
+{/if}
+
+{#if selectedDocumentUrl}
+  <div class="receipt-modal-backdrop" onclick={closeDocumentModal} role="presentation">
+    <div class="receipt-modal" tabindex="0" onclick={(event) => event.stopPropagation()} onkeydown={(event) => {
+      if (event.key === 'Escape') closeDocumentModal();
+    }} role="dialog" aria-modal="true" aria-label={selectedDocumentName}>
+      <div class="receipt-modal-header">
+        <h3>{selectedDocumentName}</h3>
+        <button class="icon-button" type="button" aria-label="Close document" onclick={closeDocumentModal}>×</button>
+      </div>
+
+      {#if isImageReceipt(selectedDocumentUrl)}
+        <img class="receipt-preview" src={selectedDocumentUrl} alt={selectedDocumentName} />
+      {:else}
+        <div class="receipt-preview-placeholder">
+          <FileText size={36} />
+          <p>{selectedDocumentName}</p>
+          <a class="button" href={selectedDocumentUrl} target="_blank" rel="noreferrer noopener">Open file</a>
+        </div>
+      {/if}
+    </div>
+  </div>
+{/if}
+
+{#if userRole !== 'admin' && tenantStatusModal === null && renterProfile && renterProfile.id}
+  <section class="panel" style="margin-top: 24px;">
+    <p class="page-kicker">Documents</p>
+    <h2>Tenant records</h2>
+    <div class="document-grid">
+      {#each tenantDocumentFields as field}
+        <div class="document-card">
+          <div class="document-card-header">
+            <strong>{field === 'creditData' ? 'Credit data' : field === 'appData' ? 'Application data' : 'Damage data'}</strong>
+            <span>{renterProfile[field]?.length ?? 0} file(s)</span>
+          </div>
+
+          {#if renterProfile[field]?.length}
+            <ul class="document-file-list">
+              {#each renterProfile[field] as fileName}
+                <li>
+                  <button class="file-link-button" type="button" onclick={() => openDocumentModal(field, fileName)}>
+                    {fileName.split('/').pop() ?? fileName}
+                  </button>
+                </li>
+              {/each}
+            </ul>
+          {:else}
+            <p class="muted small-muted">No files uploaded yet.</p>
+          {/if}
+        </div>
+      {/each}
+    </div>
+  </section>
+
+  <section class="panel" style="margin-top: 24px;">
+    <p class="page-kicker">Maintenance</p>
+    <h2>Your repair requests</h2>
+    {#if maintenanceIssuesLoading}
+      <p class="muted">Loading maintenance issues...</p>
+    {:else if maintenanceIssues.length}
+      <ul class="rental-list">
+        {#each maintenanceIssues as issue}
+          <li class="rental-row maintenance-row">
+            <div class="rental-row-copy">
+              <strong>{plainText(issue.problem) || 'Maintenance request'}</strong>
+              <span>{issue.created ? new Date(issue.created).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'Recent request'}</span>
+            </div>
+            <span class="status-tag {issue.status ?? 'reported'}">{maintenanceStatusLabel(issue.status)}</span>
+          </li>
+        {/each}
+      </ul>
+    {:else}
+      <p class="muted">You do not have any open maintenance requests right now.</p>
+    {/if}
+  </section>
 {/if}
 
 {#if userRole === 'admin' && tenants.length}
@@ -698,4 +844,4 @@
   </div>
 {/if}
 
-<style>.page-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 18px; margin-bottom: 22px; } .header-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; } .button { display: inline-flex; align-items: center; gap: 8px; border-radius: 999px; padding: 10px 16px; font-weight: 700; text-decoration: none; transition: all .18s ease; } .button[href="/tenants"] { background: #edf5d9; color: #183b35; border: 1px solid #cfe0bd; } .button[href="/bills"] { background: #183b35; color: white; border: 1px solid #183b35; } .button:hover { filter: brightness(0.98); } .credit-bureau { margin-top: 18px; padding: 14px 16px; border: 1px solid #dfe8df; border-radius: 12px; background: #f8faf7; } .credit-bureau-title { margin: 0 0 8px; color: #638077; font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; } .credit-bureau p { margin: 0; color: #536864; line-height: 1.7; } .credit-bureau a { color: #183b35; font-weight: 700; text-decoration: none; } .credit-bureau a:hover { text-decoration: underline; } .rental-list { list-style: none; padding: 0; margin: 16px 0 0; display: grid; gap: 10px; } .rental-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border: 1px solid #dfe8df; border-radius: 10px; background: #f7faf6; } .rental-row-copy { display: flex; flex-direction: column; gap: 4px; min-width: 0; } .rental-row-actions { display: flex; align-items: center; gap: 8px; } .rental-row a { color: #1f5a8a; font-weight: 700; text-decoration: none; } .rental-row a:hover { text-decoration: underline; } .rental-row span { color: #536864; font-size: 13px; } .bill-history-row { align-items: flex-start; } .bill-history-main { display: flex; flex-direction: column; gap: 8px; min-width: 0; flex: 1; } .bill-history-date { font-weight: 700; color: #183b35; } .bill-history-meta { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; } .small-button { border: none; border-radius: 999px; background: #183b35; color: white; padding: 9px 12px; font-weight: 700; font-size: 12px; cursor: pointer; } .small-button:disabled { opacity: 0.7; cursor: wait; } .small-link { color: #1f5a8a; font-size: 13px; font-weight: 700; text-decoration: none; } .small-link:hover { text-decoration: underline; } .status-tabs { display: flex; flex-direction: row; align-items: center; justify-content: flex-start; flex-wrap: wrap; gap: 12px; margin: 0 0 18px; width: 100%; } .status-tab { border: none; background: transparent; color: #536864; border-bottom: 2px solid transparent; border-radius: 0; padding: 0 0 8px; font-weight: 700; cursor: pointer; transition: all .18s ease; width: max-content; line-height: 1.2; } .status-tab.active { background: transparent; color: #183b35; border-bottom-color: #183b35; } .tenant-collapse-toggle { width: 100%; display: flex; align-items: center; justify-content: space-between; border: 1px solid #dfe8df; background: #f8faf7; color: #183b35; border-radius: 12px; padding: 12px 14px; font: inherit; font-weight: 700; cursor: pointer; } .tenant-collapse-indicator { font-size: 1.4rem; line-height: 1; } .tenant-collapse-body { display: grid; gap: 12px; margin-top: 14px; } .bill-highlight { display: grid; gap: 18px; padding: 20px 22px; } .bill-highlight-row { display: flex; justify-content: space-between; align-items: center; gap: 18px; } .bill-highlight-main { display: flex; align-items: stretch; gap: 16px; min-width: 0; } .bill-check-rail { display: flex; align-items: center; justify-content: center; min-width: 46px; border-radius: 12px; padding: 8px 0; } .bill-check-rail.open-rail { background: linear-gradient(180deg, rgba(255,192,0,0.25), rgba(255,192,0,0.38)); } .bill-check-rail.paid-rail { background: linear-gradient(180deg, rgba(28,108,66,0.12), rgba(28,108,66,0.2)); } .bill-check { flex-shrink: 0; } .bill-check.open-icon { color: #b7791f; } .bill-check.paid-icon { color: #1c6c42; } .bill-highlight-copy { display: flex; flex-direction: column; justify-content: center; } .bill-meta { display: flex; flex-wrap: wrap; gap: 10px 18px; margin-top: 8px; color: #536864; font-size: 14px; } .utilities-with-receipts { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; } .receipt-inline-list { display: inline-flex; align-items: center; gap: 6px; } .receipt-inline-link { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border: none; border-radius: 999px; background: #eef5f1; color: #183b35; text-decoration: none; font-size: 12px; cursor: pointer; } .receipt-inline-link:hover { opacity: 0.88; } .receipt-modal-backdrop { position: fixed; inset: 0; background: rgba(17, 28, 23, 0.46); display: grid; place-items: center; padding: 24px; z-index: 50; } .receipt-modal { width: min(560px, 100%); background: #fff; border: 1px solid #dfe8df; border-radius: 18px; padding: 24px; box-shadow: 0 22px 50px rgba(12, 24, 20, 0.18); } .receipt-modal-header { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 18px; } .receipt-modal-header h3 { margin: 0; font-size: 1.2rem; color: #183b35; } .receipt-preview { display: block; width: 100%; max-height: 72vh; object-fit: contain; border-radius: 12px; background: #f7faf6; border: 1px solid #dfe8df; } .receipt-preview-placeholder { display: grid; gap: 12px; justify-items: center; padding: 26px 12px; border: 1px dashed #cdd9d1; border-radius: 12px; text-align: center; color: #536864; } .receipt-preview-placeholder p { margin: 0; } .bill-highlight-side { display: flex; flex-direction: column; align-items: flex-end; gap: 10px; } .bill-total { font-size: clamp(2rem, 4vw, 2.6rem); font-weight: 800; letter-spacing: -.04em; color: #183b35; } .pill { display: inline-flex; align-items: center; border-radius: 999px; padding: 6px 10px; font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; } .pill.paid { background: #e9f8e5; color: #1c6c42; } .pill.unpaid { background: #fff2d9; color: #8d5a00; } .modal-backdrop { position: fixed; inset: 0; background: rgba(17, 28, 23, 0.46); display: grid; place-items: center; padding: 24px; z-index: 50; } .modal { width: min(560px, 100%); background: #fff; border: 1px solid #dfe8df; border-radius: 18px; padding: 24px; box-shadow: 0 22px 50px rgba(12, 24, 20, 0.18); } .modal-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 18px; } .modal-header h2 { margin: 0; font-size: 1.5rem; } .icon-button { background: transparent; border: 1px solid #dfe8df; border-radius: 999px; width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; color: #183b35; font-size: 20px; cursor: pointer; } .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; } .form-grid label, .notes { display: grid; gap: 7px; color: #71837c; font-size: 13px; } .form-grid input, .notes textarea { width: 100%; box-sizing: border-box; border: 1px solid #d8e3d8; border-radius: 7px; padding: 10px; } .notes { margin-top: 15px; } .modal-footer { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; } .button-secondary { border: 1px solid #dfe8df; background: white; color: #183b35; border-radius: 999px; padding: 10px 16px; font-weight: 700; cursor: pointer; } .form-error { margin-top: 14px; color: #a14c3b; font-size: 13px; font-weight: 600; } @media (max-width: 640px) { .rental-row { align-items: flex-start; flex-direction: column; } .small-button { width: 100%; } .form-grid { grid-template-columns: 1fr; } } </style>
+<style>.page-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 18px; margin-bottom: 22px; } .header-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; } .button { display: inline-flex; align-items: center; gap: 8px; border-radius: 999px; padding: 10px 16px; font-weight: 700; text-decoration: none; transition: all .18s ease; } .button[href="/tenants"] { background: #edf5d9; color: #183b35; border: 1px solid #cfe0bd; } .button[href="/bills"] { background: #183b35; color: white; border: 1px solid #183b35; } .button:hover { filter: brightness(0.98); } .credit-bureau { margin-top: 18px; padding: 14px 16px; border: 1px solid #dfe8df; border-radius: 12px; background: #f8faf7; } .credit-bureau-title { margin: 0 0 8px; color: #638077; font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; } .credit-bureau p { margin: 0; color: #536864; line-height: 1.7; } .credit-bureau a { color: #183b35; font-weight: 700; text-decoration: none; } .credit-bureau a:hover { text-decoration: underline; } .document-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; margin-top: 14px; } .document-card { border: 1px solid #dfe8df; border-radius: 12px; background: #f7faf6; padding: 14px; display: grid; gap: 12px; } .document-card-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; font-size: 13px; } .document-card-header strong { color: #183b35; } .document-card-header span { color: #536864; font-size: 12px; } .document-file-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; } .file-link-button { width: 100%; text-align: left; border: 1px solid #dfe8df; background: white; border-radius: 10px; padding: 9px 10px; color: #183b35; font-weight: 600; cursor: pointer; } .small-muted { margin: 0; } .rental-list { list-style: none; padding: 0; margin: 16px 0 0; display: grid; gap: 10px; } .rental-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border: 1px solid #dfe8df; border-radius: 10px; background: #f7faf6; } .rental-list .rental-row:nth-child(odd) { background: #f7faf6; } .rental-list .rental-row:nth-child(even) { background: #eef5f1; } .rental-row-copy { display: flex; flex-direction: column; gap: 4px; min-width: 0; } .rental-row-actions { display: flex; align-items: center; gap: 8px; } .rental-row span { color: #536864; font-size: 13px; } .bill-history-row { align-items: flex-start; } .bill-history-main { display: flex; flex-direction: column; gap: 8px; min-width: 0; flex: 1; } .bill-history-date { font-weight: 700; color: #183b35; } .bill-history-meta { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; } .small-button { border: none; border-radius: 999px; background: #183b35; color: white; padding: 9px 12px; font-weight: 700; font-size: 12px; cursor: pointer; } .small-button:disabled { opacity: 0.7; cursor: wait; } .small-link { color: #1f5a8a; font-size: 13px; font-weight: 700; text-decoration: none; } .small-link:hover { text-decoration: underline; } .status-tabs { display: flex; flex-direction: row; align-items: center; justify-content: flex-start; flex-wrap: wrap; gap: 12px; margin: 0 0 18px; width: 100%; } .status-tab { border: none; background: transparent; color: #536864; border-bottom: 2px solid transparent; border-radius: 0; padding: 0 0 8px; font-weight: 700; cursor: pointer; transition: all .18s ease; width: max-content; line-height: 1.2; } .status-tab.active { background: transparent; color: #183b35; border-bottom-color: #183b35; } .tenant-collapse-toggle { width: 100%; display: flex; align-items: center; justify-content: space-between; border: 1px solid #dfe8df; background: #f8faf7; color: #183b35; border-radius: 12px; padding: 12px 14px; font: inherit; font-weight: 700; cursor: pointer; } .tenant-collapse-indicator { font-size: 1.4rem; line-height: 1; } .tenant-collapse-body { display: grid; gap: 12px; margin-top: 14px; } .bill-highlight { display: grid; gap: 18px; padding: 20px 22px; } .bill-highlight-row { display: flex; justify-content: space-between; align-items: center; gap: 18px; } .bill-highlight-main { display: flex; align-items: stretch; gap: 16px; min-width: 0; } .bill-check-rail { display: flex; align-items: center; justify-content: center; min-width: 46px; border-radius: 12px; padding: 8px 0; } .bill-check-rail.open-rail { background: linear-gradient(180deg, rgba(255,192,0,0.25), rgba(255,192,0,0.38)); } .bill-check-rail.paid-rail { background: linear-gradient(180deg, rgba(28,108,66,0.12), rgba(28,108,66,0.2)); } .bill-check { flex-shrink: 0; } .bill-check.open-icon { color: #b7791f; } .bill-check.paid-icon { color: #1c6c42; } .bill-highlight-copy { display: flex; flex-direction: column; justify-content: center; } .bill-meta { display: flex; flex-wrap: wrap; gap: 10px 18px; margin-top: 8px; color: #536864; font-size: 14px; } .utilities-with-receipts { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; } .receipt-inline-list { display: inline-flex; align-items: center; gap: 6px; } .receipt-inline-link { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border: none; border-radius: 999px; background: #eef5f1; color: #183b35; text-decoration: none; font-size: 12px; cursor: pointer; } .receipt-inline-link:hover { opacity: 0.88; } .receipt-modal-backdrop { position: fixed; inset: 0; background: rgba(17, 28, 23, 0.46); display: grid; place-items: center; padding: 24px; z-index: 50; } .receipt-modal { width: min(560px, 100%); background: #fff; border: 1px solid #dfe8df; border-radius: 18px; padding: 24px; box-shadow: 0 22px 50px rgba(12, 24, 20, 0.18); } .receipt-modal-header { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 18px; } .receipt-modal-header h3 { margin: 0; font-size: 1.2rem; color: #183b35; } .receipt-preview { display: block; width: 100%; max-height: 72vh; object-fit: contain; border-radius: 12px; background: #f7faf6; border: 1px solid #dfe8df; } .receipt-preview-placeholder { display: grid; gap: 12px; justify-items: center; padding: 26px 12px; border: 1px dashed #cdd9d1; border-radius: 12px; text-align: center; color: #536864; } .receipt-preview-placeholder p { margin: 0; } .bill-highlight-side { display: flex; flex-direction: column; align-items: flex-end; gap: 10px; } .bill-total { font-size: clamp(2rem, 4vw, 2.6rem); font-weight: 800; letter-spacing: -.04em; color: #183b35; } .pill { display: inline-flex; align-items: center; border-radius: 999px; padding: 6px 10px; font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; } .pill.paid { background: #e9f8e5; color: #1c6c42; } .pill.unpaid { background: #fff2d9; color: #8d5a00; } .modal-backdrop { position: fixed; inset: 0; background: rgba(17, 28, 23, 0.46); display: grid; place-items: center; padding: 24px; z-index: 50; } .modal { width: min(560px, 100%); background: #fff; border: 1px solid #dfe8df; border-radius: 18px; padding: 24px; box-shadow: 0 22px 50px rgba(12, 24, 20, 0.18); } .modal-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 18px; } .modal-header h2 { margin: 0; font-size: 1.5rem; } .icon-button { background: transparent; border: 1px solid #dfe8df; border-radius: 999px; width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center; color: #183b35; font-size: 20px; cursor: pointer; } .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; } .form-grid label, .notes { display: grid; gap: 7px; color: #71837c; font-size: 13px; } .form-grid input, .notes textarea { width: 100%; box-sizing: border-box; border: 1px solid #d8e3d8; border-radius: 7px; padding: 10px; } .notes { margin-top: 15px; } .modal-footer { display: flex; justify-content: flex-end; gap: 10px; margin-top: 18px; } .button-secondary { border: 1px solid #dfe8df; background: white; color: #183b35; border-radius: 999px; padding: 10px 16px; font-weight: 700; cursor: pointer; } .form-error { margin-top: 14px; color: #a14c3b; font-size: 13px; font-weight: 600; } @media (max-width: 640px) { .rental-row { align-items: flex-start; flex-direction: column; } .small-button { width: 100%; } .form-grid { grid-template-columns: 1fr; } } </style>

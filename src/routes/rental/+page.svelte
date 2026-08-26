@@ -37,9 +37,7 @@
   let pendingPhotos = $state<File[]>([]);
   let uploadingPhotos = $state(false);
   let pageError = $state('');
-  let pageDebug = $state('');
   let photoUploadError = $state('');
-  let photoUploadDebug = $state('');
   let selectedPhotoUrl = $state<string | null>(null);
   let photoSizeLabel = $derived(
     pendingPhotos.length
@@ -99,9 +97,7 @@
   ] : []);
 
   onMount(async () => {
-    console.log('[rental page] MOUNT');
     const rentalId = page.url.searchParams.get('id');
-    console.log('[rental page] rentalId:', rentalId);
 
     try {
       const fallbackRentalId = 'ox69y3qco02ymgp';
@@ -110,24 +106,12 @@
       } else {
         rental = await rentalService.getCurrent();
         if (!rental) {
-          console.log('[rental page] using fallback rental id:', fallbackRentalId);
           rental = await rentalService.getById(fallbackRentalId, { bypassUserScope: true });
         }
       }
-
-      console.log('[rental page] rental:', rental);
-      console.log('[rental page] adminRows:', adminRows);
     } catch (error) {
       console.error('[rental page] fetch error:', error);
-      const status = error && typeof error === 'object' && 'status' in error ? String((error as any).status ?? 'unknown') : 'unknown';
-      const message = error && typeof error === 'object' && 'message' in error ? String((error as any).message ?? 'Unknown error') : 'Unknown error';
       pageError = '500 Internal Error';
-      pageDebug = [
-        `status: ${status}`,
-        `message: ${message}`,
-        `role: ${getAuthRoleLabel()}`,
-        `rentalId: ${rentalId ?? 'not provided'}`
-      ].join('\n');
     }
 
     address = plainText(rental?.address) ?? '';
@@ -161,7 +145,6 @@
       if (error) {
         pendingPhotos = [];
         photoUploadError = error;
-        photoUploadDebug = `Client-side validation failed for ${file.name}: ${file.type || 'unknown type'} (${(file.size / 1024).toFixed(1)} KB)`;
         if (input) input.value = '';
         return;
       }
@@ -170,7 +153,6 @@
 
     pendingPhotos = validFiles.slice(0, 10);
     photoUploadError = '';
-    photoUploadDebug = '';
   }
 
   function getAuthRoleLabel() {
@@ -184,7 +166,6 @@
     const validationError = getPhotoValidationError(selectedFile);
     if (validationError) {
       photoUploadError = validationError;
-      photoUploadDebug = `Client-side validation failed for ${selectedFile.name}: ${selectedFile.type || 'unknown type'} (${(selectedFile.size / 1024).toFixed(1)} KB)`;
       pendingPhotos = [];
       const inputs = document.querySelectorAll<HTMLInputElement>('input[type="file"][accept="image/*"]');
       inputs.forEach((input) => {
@@ -195,7 +176,6 @@
 
     uploadingPhotos = true;
     photoUploadError = '';
-    photoUploadDebug = '';
 
     try {
       const updated = await rentalService.uploadPhotos(rental.id, pendingPhotos);
@@ -211,19 +191,6 @@
     } catch (error) {
       console.error('[rental page] photo upload failed:', error);
 
-      const responseData = error && typeof error === 'object' && 'response' in error ? (error as any).response?.data : null;
-      const responseStatus = error && typeof error === 'object' && 'status' in error ? (error as any).status : null;
-      const responseMessage = error && typeof error === 'object' && 'message' in error ? (error as any).message : null;
-      const responseText = typeof responseData === 'string' ? responseData : JSON.stringify(responseData ?? null, null, 2);
-
-      photoUploadDebug = [
-        `status: ${responseStatus ?? 'unknown'}`,
-        `message: ${responseMessage ?? 'unknown'}`,
-        `body: ${responseText || 'empty response body'}`,
-        `role: ${getAuthRoleLabel()}`,
-        `rentalId: ${rental?.id ?? 'missing'}`
-      ].join('\n');
-
       photoUploadError = 'Unable to upload that photo. Please try again.';
     } finally {
       uploadingPhotos = false;
@@ -232,13 +199,9 @@
 </script>
 <svelte:head><title>Rental · RentalOS3</title></svelte:head>
 <div class="page-header"><div><p class="page-kicker">The place you call home</p><h1>Rental details</h1><p class="muted">Keep the important property information in one place.</p><span class="role-badge">{roleLabel} role</span></div>{#if isAdmin && rental}<button class="button" onclick={() => editing = !editing}><Edit3 size={16} /> {editing ? 'Cancel' : 'Edit rental'}</button>{/if}</div>
-<div class="auth-debug-banner">Logged in as: <strong>{getAuthRoleLabel()}</strong></div>
 {#if pageError}
   <div class="error-banner" role="alert">
     <strong>{pageError}</strong>
-    {#if pageDebug}
-      <pre class="error-debug">{pageDebug}</pre>
-    {/if}
   </div>
 {/if}
 <div class="rental-grid">
@@ -257,7 +220,7 @@
       <div class="field"><span>Bills</span><div class="chip-list">{#if rental?.bills?.length}{#each rental.bills as bill}<span class="chip">{bill}</span>{/each}{:else}<span class="muted">---</span>{/if}</div></div>
       <div class="field"><span>Photo upload</span><div class="file-upload"><label class="file-upload-label" for="rental-photos">Choose files</label><input id="rental-photos" name="rental-photos" type="file" accept="image/*" multiple onchange={handlePhotoSelection} /></div></div>
       {#if pendingPhotos.length}<div class="field"><span>{pendingPhotos.length === 1 ? 'Selected photo' : 'Selected photos'}</span><div class="chip-list">{#each pendingPhotos as file}<span class="chip">{file.name}</span>{/each}{#if photoSizeLabel}<span class="chip size-chip">{photoSizeLabel}</span>{/if}</div><button class="button" type="button" onclick={uploadPhotos} disabled={uploadingPhotos}>{uploadingPhotos ? 'Uploading...' : `Upload ${pendingPhotos.length} photo${pendingPhotos.length === 1 ? '' : 's'}`}</button></div>{/if}
-      {#if photoUploadError}<p class="error-text">{photoUploadError}</p>{#if photoUploadDebug}<pre class="error-debug">{photoUploadDebug}</pre>{/if}{/if}
+      {#if photoUploadError}<p class="error-text">{photoUploadError}</p>{/if}
       <button class="button" onclick={save}>Save changes</button>
     {:else}
       <dl class="detail-list">
@@ -273,18 +236,19 @@
     {#if rental?.photos?.length}
       <div class="photo-grid">
         {#each rental.photos as photo}
+          {@const photoUrl = rental ? pocketbase.client.files.getURL(rental, photo) : ''}
           <img
             class="property-photo"
-            src={pocketbase.client.files.getURL(rental, photo)}
+            src={photoUrl}
             alt="Rental property"
             tabindex="0"
             role="button"
             aria-label="Open photo preview"
-            onclick={() => openPhotoModal(pocketbase.client.files.getURL(rental, photo))}
+            onclick={() => rental && openPhotoModal(photoUrl)}
             onkeydown={(event) => {
-              if (event.key === 'Enter' || event.key === ' ') {
+              if ((event.key === 'Enter' || event.key === ' ') && rental) {
                 event.preventDefault();
-                openPhotoModal(pocketbase.client.files.getURL(rental, photo));
+                openPhotoModal(photoUrl);
               }
             }}
           />

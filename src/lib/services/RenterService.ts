@@ -31,6 +31,9 @@ export interface RenterListParams {
 }
 
 const getCurrentUserId = () => pocketbase.client.authStore.model?.id ?? null;
+const isAbortError = (error: unknown) => {
+  return error instanceof Error && (error.name === 'AbortError' || error.message?.toLowerCase().includes('aborted'));
+};
 
 export class RenterService {
   async list(params: RenterListParams = {}) {
@@ -59,6 +62,7 @@ export class RenterService {
 
       return records[0] ?? null;
     } catch (error) {
+      if (isAbortError(error)) return null;
       console.error('[RenterService.getCurrent] failed to load renter profile:', error);
       return null;
     }
@@ -73,9 +77,11 @@ export class RenterService {
 
     formData.append('user', userId);
 
-    const creditFiles = files.creditData ?? [];
-    creditFiles.forEach((file) => {
-      formData.append('creditData', file, file.name);
+    (['creditData', 'appData', 'damageData'] as const).forEach((field) => {
+      const fieldFiles = files[field] ?? [];
+      fieldFiles.forEach((file) => {
+        formData.append(field, file, file.name);
+      });
     });
 
     if (existing?.id) {

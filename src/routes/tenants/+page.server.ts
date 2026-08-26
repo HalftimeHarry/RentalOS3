@@ -41,8 +41,6 @@ type TenantRow = UserRecord & {
 export const load: PageServerLoad = async ({ locals, url }) => {
   const pb = locals.pb;
 
-  console.log('[tenants route] session valid:', pb.authStore.isValid, 'role:', pb.authStore.model?.role ?? 'unknown');
-
   if (!pb.authStore.isValid) {
     console.warn('[tenants route] unauthenticated user; redirecting to /login');
     throw redirect(302, '/login');
@@ -65,8 +63,6 @@ export const load: PageServerLoad = async ({ locals, url }) => {
       expand: 'user',
       ...(filter ? { filter } : {})
     });
-
-    console.log('[tenants route] loaded renter records:', renterResult.items.length, 'page:', renterResult.page, 'total:', renterResult.totalItems);
 
     const rows: TenantRow[] = await Promise.all(renterResult.items.map(async (renter) => {
       let expandedUser = renter.expand?.user as UserRecord | undefined;
