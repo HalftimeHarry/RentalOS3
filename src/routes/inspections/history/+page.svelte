@@ -68,10 +68,7 @@
 
   onMount(async () => {
     try {
-      const records = await pocketbase.client.collection('inspections').getFullList({
-        sort: '-created'
-      });
-
+      const records = await pocketbase.client.collection('inspections').getFullList();
       inspections = records as InspectionRecord[];
     } catch (loadError) {
       console.error('[inspection history] load failed:', loadError);
