@@ -3,8 +3,10 @@
   import { Printer, RotateCcw, Save } from '@lucide/svelte';
   import { pocketbase } from '$lib/pocketbase/PocketBaseProvider';
   import { renterService } from '$lib/services/RenterService';
+  import { canEditInspectionStatus, type InspectionWorkflowStatus } from '$lib/inspection/inspectionWorkflow';
 
   type InspectionType = 'move-in' | 'move-out';
+  type WorkflowStatus = InspectionWorkflowStatus;
   type ItemState = { na: boolean; o: boolean; desc: string };
 
   type Section = {
@@ -52,9 +54,30 @@
   ];
 
   const createItemState = (): ItemState => ({ na: false, o: false, desc: '' });
-  const initialSectionState = Object.fromEntries(
+  const createSectionState = () => Object.fromEntries(
     sections.map((section) => [section.title, Object.fromEntries(section.items.map((item) => [item, createItemState()]))])
   );
+  const initialSectionState = createSectionState();
+
+  function getItemState(sectionTitle: string, item: string): ItemState {
+    return sectionStates[sectionTitle]?.[item] ?? createItemState();
+  }
+
+  function updateItemState(sectionTitle: string, item: string, patch: Partial<ItemState>) {
+    const currentSection = sectionStates[sectionTitle] ?? {};
+    const currentItem = currentSection[item] ?? createItemState();
+
+    sectionStates = {
+      ...sectionStates,
+      [sectionTitle]: {
+        ...currentSection,
+        [item]: {
+          ...currentItem,
+          ...patch
+        }
+      }
+    };
+  }
 
   const providerAdminId = '0vkp0699sqhkv90';
   const providerAdminRecord = {
@@ -64,8 +87,9 @@
   };
 
   let inspectionType = $state<InspectionType>('move-in');
-  let workflowStatus = $state<'draft' | 'admin-complete' | 'tenant-reviewed' | 'admin-approved' | 'checkout-approved'>('draft');
+  let workflowStatus = $state<WorkflowStatus>('draft');
   let currentTenantId = $state<string | null>(null);
+  let editInspectionId = $state<string | null>(null);
   let tenantOptions = $state<Array<{ id: string; name: string; email?: string }>>([]);
   let selectedTenantId = $state<string>('');
   let form = $state({
@@ -97,6 +121,68 @@
   let saveMessage = $state('');
   let savingInspection = $state(false);
   let tenantOptionsRequestId = 0;
+
+  const isInspectionLocked = () => {
+    if (!editInspectionId) return false;
+    return !canEditInspectionStatus(workflowStatus);
+  };
+
+  function applyInspectionRecord(record: Record<string, any>) {
+    const nextType = record.type === 'move-out' ? 'move-out' : 'move-in';
+    inspectionType = nextType;
+    workflowStatus = (record.workflow_status ?? 'draft') as WorkflowStatus;
+    form = {
+      propertyAddress: record.property_address ?? '2728 B Street, San Diego CA 92102',
+      unitNo: record.unit_no ?? '102',
+      tenants: record.tenants ?? '',
+      moveInDate: record.move_in_date ?? '',
+      moveOutDate: record.move_out_date ?? '',
+      otherConditionSummary: Boolean(record.other_condition_summary),
+      notes: record.notes ?? '',
+      tenantName1: record.tenant_name_1 ?? '',
+      tenantName2: record.tenant_name_2 ?? '',
+      providerName: record.provider_name ?? '',
+      providerDate: record.provider_date ?? '',
+      tenantDate1: record.tenant_date_1 ?? '',
+      tenantDate2: record.tenant_date_2 ?? '',
+      adminSignature: record.admin_signature ?? '',
+      adminSignatureDate: record.admin_signature_date ?? '',
+      tenantSignature: record.tenant_signature ?? '',
+      tenantSignDate: record.tenant_sign_date ?? '',
+      adminApprovalName: record.admin_approval_name ?? '',
+      adminApprovalDate: record.admin_approval_date ?? '',
+      checkoutApprovalName: record.checkout_approval_name ?? '',
+      checkoutApprovalDate: record.checkout_approval_date ?? '',
+      checkoutNotes: record.checkout_notes ?? ''
+    };
+
+    if (record.checklist) {
+      try {
+        const parsed = typeof record.checklist === 'string' ? JSON.parse(record.checklist) : record.checklist;
+        if (parsed && typeof parsed === 'object') {
+          sectionStates = Object.fromEntries(
+            sections.map((section) => {
+              const sectionData = parsed[section.title] ?? {};
+              return [
+                section.title,
+                Object.fromEntries(section.items.map((item) => [item, { na: Boolean(sectionData[item]?.na), o: Boolean(sectionData[item]?.o), desc: String(sectionData[item]?.desc ?? '') }]))
+              ];
+            })
+          );
+        }
+      } catch {
+        sectionStates = Object.fromEntries(
+          sections.map((section) => [section.title, Object.fromEntries(section.items.map((item) => [item, createItemState()]))])
+        );
+      }
+    }
+
+    if (record.tenant) {
+      selectedTenantId = record.tenant;
+      const tenantName = record.tenants || record.tenant_name_1 || record.tenant_name_2 || '';
+      form.tenants = tenantName;
+    }
+  }
 
   async function loadTenantOptionsForAdmin() {
     if (!pocketbase.client.authStore.isValid) return;
@@ -156,6 +242,20 @@
   }
 
   onMount(async () => {
+    const params = new URLSearchParams(window.location.search);
+    const editId = params.get('edit');
+
+    if (editId) {
+      editInspectionId = editId;
+      try {
+        const record = await pocketbase.client.collection('inspections').getOne(editId);
+        applyInspectionRecord(record);
+      } catch (error) {
+        console.error('[inspections] failed to load inspection for edit:', error);
+        saveError = 'This inspection could not be loaded for editing.';
+      }
+    }
+
     await loadTenantOptionsForAdmin();
 
     const unsubscribe = pocketbase.client.authStore.onChange(() => {
@@ -166,6 +266,12 @@
   });
 
   function resetForm() {
+    editInspectionId = null;
+    if (typeof window !== 'undefined') {
+      const nextUrl = new URL(window.location.href);
+      nextUrl.searchParams.delete('edit');
+      window.history.replaceState({}, '', `${nextUrl.pathname}${nextUrl.search}`);
+    }
     workflowStatus = 'draft';
     form = {
       propertyAddress: '2728 B Street, San Diego CA 92102',
@@ -191,9 +297,7 @@
       checkoutApprovalDate: '',
       checkoutNotes: ''
     };
-    sectionStates = Object.fromEntries(
-      sections.map((section) => [section.title, Object.fromEntries(section.items.map((item) => [item, createItemState()]))])
-    );
+    sectionStates = createSectionState();
   }
 
   function printForm() {
@@ -210,6 +314,17 @@
   }
 
   async function saveInspection() {
+    const effectiveEditId = editInspectionId ?? (typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('edit') : null);
+    if (effectiveEditId) {
+      editInspectionId = effectiveEditId;
+    }
+
+    if (isInspectionLocked()) {
+      saveError = 'This inspection is locked from editing because it has reached a final approval status.';
+      saveMessage = '';
+      return;
+    }
+
     saveError = '';
     saveMessage = 'Trying to save inspection…';
 
@@ -265,9 +380,23 @@
         created_by: pocketbase.client.authStore.model?.id ?? null
       };
 
-      const record = await pocketbase.client.collection('inspections').create(payload);
-      saveMessage = `Inspection saved${record?.id ? ` for ${form.tenants.trim()}` : ''}.`;
-      console.log('[inspections page] saved record:', record);
+      const record = effectiveEditId
+        ? await pocketbase.client.collection('inspections').update(effectiveEditId, payload)
+        : await pocketbase.client.collection('inspections').create(payload);
+
+      if (effectiveEditId) {
+        saveMessage = `Inspection updated${record?.id ? ` for ${form.tenants.trim()}` : ''}.`;
+        console.log('[inspections page] updated record:', record);
+        editInspectionId = null;
+        if (typeof window !== 'undefined') {
+          const nextUrl = new URL(window.location.href);
+          nextUrl.searchParams.delete('edit');
+          window.history.replaceState({}, '', `${nextUrl.pathname}${nextUrl.search}`);
+        }
+      } else {
+        saveMessage = `Inspection saved${record?.id ? ` for ${form.tenants.trim()}` : ''}.`;
+        console.log('[inspections page] saved record:', record);
+      }
     } catch (error) {
       console.error('[inspections page] save failed:', error);
       saveError = 'We could not save this inspection. Make sure the PocketBase inspections collection exists and the current user has permission.';
@@ -364,7 +493,7 @@
       <h2>Shared inspection workflow</h2>
       <label class="field compact-field">
         <span>Current stage</span>
-        <select bind:value={workflowStatus}>
+        <select bind:value={workflowStatus} disabled={isInspectionLocked()}>
           <option value="draft">Draft</option>
           <option value="admin-complete">Admin completed initial review</option>
           <option value="tenant-reviewed">Tenant notes and signature added</option>
@@ -373,6 +502,10 @@
         </select>
       </label>
     </div>
+
+    {#if editInspectionId && isInspectionLocked()}
+      <div class="inline-alert warning-alert" role="status">This record is locked for editing because it has reached final approval.</div>
+    {/if}
 
     <div class="workflow-grid">
       <div class="workflow-card">
@@ -415,12 +548,31 @@
           </thead>
           <tbody>
             {#each section.items as item}
-              {@const itemState = sectionStates[section.title]?.[item] ?? createItemState()}
+              {@const itemState = getItemState(section.title, item)}
               <tr>
                 <td class="item-name">{item}</td>
-                <td><input bind:checked={itemState.na} type="checkbox" /></td>
-                <td><input bind:checked={itemState.o} type="checkbox" /></td>
-                <td><input bind:value={itemState.desc} type="text" placeholder="Comment" /></td>
+                <td>
+                  <input
+                    checked={itemState.na}
+                    type="checkbox"
+                    onchange={(event) => updateItemState(section.title, item, { na: (event.currentTarget as HTMLInputElement).checked })}
+                  />
+                </td>
+                <td>
+                  <input
+                    checked={itemState.o}
+                    type="checkbox"
+                    onchange={(event) => updateItemState(section.title, item, { o: (event.currentTarget as HTMLInputElement).checked })}
+                  />
+                </td>
+                <td>
+                  <input
+                    value={itemState.desc}
+                    type="text"
+                    placeholder="Comment"
+                    onchange={(event) => updateItemState(section.title, item, { desc: (event.currentTarget as HTMLInputElement).value })}
+                  />
+                </td>
               </tr>
             {/each}
           </tbody>
@@ -496,7 +648,7 @@
   </div>
 
   <div class="form-footer">
-    <button class="button" type="button" onclick={saveInspection} disabled={savingInspection}><Save size={15} /> {savingInspection ? 'Saving...' : 'Save inspection'}</button>
+    <button class="button" type="button" onclick={saveInspection} disabled={savingInspection || isInspectionLocked()}><Save size={15} /> {savingInspection ? 'Saving...' : isInspectionLocked() ? 'Locked' : 'Save inspection'}</button>
   </div>
 </section>
 

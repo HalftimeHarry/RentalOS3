@@ -95,6 +95,11 @@
     return getExpandedName(record.expand?.created_by?.name) || record.created_by || '—';
   };
 
+  const canEditInspection = (record?: InspectionRecord | null) => {
+    const status = record?.workflow_status;
+    return status === 'draft' || status === 'admin-complete' || status === 'tenant-reviewed';
+  };
+
   const openInspection = (record: InspectionRecord) => {
     selectedInspection = record;
   };
@@ -150,7 +155,6 @@
             <th>Type</th>
             <th>Date</th>
             <th>Provider</th>
-            <th>Created by</th>
             <th>Stage</th>
             <th>Notes</th>
           </tr>
@@ -176,7 +180,6 @@
                 {record.type === 'move-out' ? prettyDate(record.move_out_date) : prettyDate(record.move_in_date)}
               </td>
               <td>{getProviderName(record)}</td>
-              <td>{getCreatedByName(record)}</td>
               <td>
                 <span class="stage-tag">{workflowLabel(record.workflow_status)}</span>
               </td>
@@ -258,6 +261,19 @@
           <p>{selectedInspection.notes || selectedInspection.checkout_notes || '—'}</p>
         </div>
       {/if}
+
+      <div class="action-bar">
+        {#if canEditInspection(selectedInspection)}
+          <a class="button" href={`/inspections?edit=${selectedInspection.id}`}>Edit inspection</a>
+        {:else}
+          <button class="button secondary-button" type="button" disabled>Editing locked</button>
+        {/if}
+        <span class="status-note">
+          {canEditInspection(selectedInspection)
+            ? 'This record can still be updated while it is in an active workflow stage.'
+            : 'Editing is locked once the inspection reaches final approval.'}
+        </span>
+      </div>
 
       {#if selectedInspection.notes && selectedInspection.checkout_notes && selectedInspection.notes !== selectedInspection.checkout_notes}
         <div class="notes-block">
@@ -528,6 +544,46 @@
     margin: 0;
     color: #405b57;
     line-height: 1.7;
+  }
+
+  .action-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+    margin-top: 18px;
+    padding-top: 12px;
+    border-top: 1px solid #dfe8df;
+  }
+
+  .button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 999px;
+    padding: 10px 16px;
+    border: 1px solid #183b35;
+    background: #183b35;
+    color: white;
+    text-decoration: none;
+    font-weight: 700;
+    cursor: pointer;
+  }
+
+  .button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+  }
+
+  .secondary-button {
+    background: white;
+    color: #183b35;
+  }
+
+  .status-note {
+    color: #536864;
+    font-size: 13px;
   }
 
   .section-card {

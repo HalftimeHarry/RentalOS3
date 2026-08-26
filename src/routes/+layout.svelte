@@ -9,7 +9,7 @@
 	import { pocketbase } from '$lib/pocketbase/PocketBaseProvider';
 	import { rentalService } from '$lib/services/RentalService';
 
-	let { children } = $props();
+	let { children } = $props<{ children?: () => unknown }>();
 	let isLoggedIn = $state(false);
 	let hydrated = $state(false);
 	let hasRentalReference = $state(false);
@@ -101,9 +101,9 @@
 				<button class="logout" onclick={logout}><LogOut size={17} /> Sign out</button>
 			</nav>
 		</aside>
-		<main class="main-content">{@render children()}</main>
+		<main class="main-content">{#if children}{@render children()}{/if}</main>
 	</div>
-{:else}
+{:else if children}
 	{@render children()}
 {/if}
 
