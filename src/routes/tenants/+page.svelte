@@ -264,8 +264,22 @@
   </div>
 
   {#if previewFile}
-    <div class="modal-backdrop" role="presentation" onclick={() => (previewFile = null)}>
-      <div class="preview-panel" role="dialog" aria-modal="true" aria-label="Uploaded document preview" onclick={(event) => event.stopPropagation()}>
+    <div
+      class="modal-backdrop"
+      role="button"
+      tabindex="0"
+      aria-label="Close document preview"
+      onclick={() => (previewFile = null)}
+      onkeydown={(event) => {
+        if (event.key === 'Escape' || event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          previewFile = null;
+        }
+      }}
+    >
+      <div class="preview-panel" role="dialog" aria-modal="true" aria-label="Uploaded document preview" tabindex="-1" onclick={(event) => event.stopPropagation()} onkeydown={(event) => {
+        if (event.key === 'Escape') previewFile = null;
+      }}>
         <div class="modal-header">
           <div>
             <p class="page-kicker">Document preview</p>
@@ -286,8 +300,22 @@
   {/if}
 
   {#if statusModal}
-    <div class="modal-backdrop" role="presentation" onclick={() => (statusModal = null)}>
-      <div class="modal-panel" role="dialog" aria-modal="true" aria-label="Edit tenant status" onclick={(event) => event.stopPropagation()}>
+    <div
+      class="modal-backdrop"
+      role="button"
+      tabindex="0"
+      aria-label="Close tenant status dialog"
+      onclick={() => (statusModal = null)}
+      onkeydown={(event) => {
+        if (event.key === 'Escape' || event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          statusModal = null;
+        }
+      }}
+    >
+      <div class="modal-panel" role="dialog" aria-modal="true" aria-label="Edit tenant status" tabindex="-1" onclick={(event) => event.stopPropagation()} onkeydown={(event) => {
+        if (event.key === 'Escape') statusModal = null;
+      }}>
         <div class="modal-header">
           <div>
             <p class="page-kicker">Tenant details</p>
@@ -495,9 +523,6 @@
   .modal-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 18px; }
   .modal-header h2 { margin: 0; }
   .icon-button { border: 0; background: #f4f8f2; color: #183b35; width: 34px; height: 34px; border-radius: 999px; font-size: 22px; cursor: pointer; }
-  .tenant-form { display: grid; gap: 16px; }
-  .tenant-form label { display: grid; gap: 8px; color: #294744; font-size: 13px; font-weight: 600; }
-  .tenant-form input, .tenant-form select { width: 100%; border: 1px solid #dfe8df; border-radius: 10px; background: #fbfdfb; color: #183b35; padding: 11px 12px; font: inherit; }
   .form-error { margin: 0; color: #a14c3b; font-size: 13px; }
   .selected-file-list { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
   .file-link-button { display: inline-flex; align-items: center; gap: 8px; border: 1px solid #dfe8df; background: #f5faf4; color: #183b35; border-radius: 999px; padding: 6px 10px; font-size: 12px; font-weight: 600; cursor: pointer; }

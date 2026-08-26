@@ -12,21 +12,40 @@ const normalizeRenterId = (rental: Partial<Rental> | null | undefined) => {
 
   const tenantField = (rental as Partial<Rental>).tenant;
   const renterField = (rental as Partial<Rental>).renter;
-
-  const candidate = typeof tenantField === 'string' ? tenantField :
-    typeof renterField === 'string' ? renterField :
-    (tenantField && typeof tenantField === 'object' && 'id' in tenantField ? String(tenantField.id) : null) ??
-    (renterField && typeof renterField === 'object' && 'id' in renterField ? String(renterField.id) : null);
-
-  if (candidate) return candidate;
-
   const expandedTenant = (rental as Partial<Rental>).expand?.tenant;
   const expandedRenter = (rental as Partial<Rental>).expand?.renter;
 
-  if (expandedTenant && typeof expandedTenant === 'object' && 'id' in expandedTenant) return String(expandedTenant.id);
-  if (expandedRenter && typeof expandedRenter === 'object' && 'id' in expandedRenter) return String(expandedRenter.id);
+  const getRelationUserId = (relation: unknown): string | null => {
+    if (!relation || typeof relation === 'string') return null;
 
-  return null;
+    if (typeof relation === 'object') {
+      const userId = normalizeRelationIds((relation as { user?: unknown }).user).at(0)
+        ?? normalizeRelationIds((relation as { expand?: { user?: unknown } }).expand?.user).at(0)
+        ?? null;
+      if (userId) return userId;
+
+      const directId = 'id' in relation ? String((relation as { id?: string | null }).id ?? '') : '';
+      return directId || null;
+    }
+
+    return null;
+  };
+
+  const directTenantUserId = getRelationUserId(tenantField);
+  const directRenterUserId = getRelationUserId(renterField);
+  const expandedTenantUserId = getRelationUserId(expandedTenant);
+  const expandedRenterUserId = getRelationUserId(expandedRenter);
+
+  const userId = directTenantUserId ?? directRenterUserId ?? expandedTenantUserId ?? expandedRenterUserId;
+  if (userId) return userId;
+
+  const fallbackId =
+    (typeof tenantField === 'string' ? tenantField : null) ??
+    (typeof renterField === 'string' ? renterField : null) ??
+    (expandedTenant && typeof expandedTenant === 'object' && 'id' in expandedTenant ? String(expandedTenant.id) : null) ??
+    (expandedRenter && typeof expandedRenter === 'object' && 'id' in expandedRenter ? String(expandedRenter.id) : null);
+
+  return fallbackId ?? null;
 };
 
 const normalizeRentalRecord = (record: Partial<Rental>): Rental => {
@@ -64,7 +83,7 @@ export class RentalService {
     }
   }
 
-  async getById(id: string): Promise<Rental | null> {
+  async getById(id: string, options?: { bypassUserScope?: boolean }): Promise<Rental | null> {
     if (!id) return null;
 
     try {
@@ -72,6 +91,10 @@ export class RentalService {
       const rental = normalizeRentalRecord(record as Partial<Rental>);
       const userId = getCurrentUserId();
       const userRole = pocketbase.client.authStore.model?.role;
+
+      if (options?.bypassUserScope) {
+        return rental;
+      }
 
       if (userId && userRole !== 'admin') {
         const renterId = normalizeRenterId(rental);
