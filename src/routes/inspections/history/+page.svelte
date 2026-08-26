@@ -7,6 +7,7 @@
     type?: string;
     property_address?: string;
     unit_no?: string;
+    tenant?: string;
     tenants?: string;
     move_in_date?: string;
     move_out_date?: string;
@@ -14,9 +15,31 @@
     created?: string;
     checklist?: string | Record<string, unknown>;
     notes?: string;
+    provider?: string;
     provider_name?: string;
+    provider_date?: string;
     tenant_name_1?: string;
     tenant_name_2?: string;
+    tenant_date_1?: string;
+    tenant_date_2?: string;
+    admin_approval_name?: string;
+    admin_approval_date?: string;
+    checkout_approval_name?: string;
+    checkout_approval_date?: string;
+    checkout_notes?: string;
+    created_by?: string;
+    expand?: {
+      provider?: {
+        id?: string;
+        name?: string;
+        email?: string;
+      };
+      created_by?: {
+        id?: string;
+        name?: string;
+        email?: string;
+      };
+    };
   };
 
   let inspections = $state<InspectionRecord[]>([]);
@@ -58,6 +81,20 @@
     }
   };
 
+  const getExpandedName = (value?: string | { name?: string } | null) => {
+    if (!value) return '—';
+    if (typeof value === 'string') return value || '—';
+    return value.name || '—';
+  };
+
+  const getProviderName = (record: InspectionRecord) => {
+    return record.provider_name || getExpandedName(record.expand?.provider?.name) || record.provider || '—';
+  };
+
+  const getCreatedByName = (record: InspectionRecord) => {
+    return getExpandedName(record.expand?.created_by?.name) || record.created_by || '—';
+  };
+
   const openInspection = (record: InspectionRecord) => {
     selectedInspection = record;
   };
@@ -68,7 +105,9 @@
 
   onMount(async () => {
     try {
-      const records = await pocketbase.client.collection('inspections').getFullList();
+      const records = await pocketbase.client.collection('inspections').getFullList({
+        fields: 'id,type,property_address,unit_no,tenant,tenants,move_in_date,move_out_date,notes,provider,provider_name,provider_date,tenant_name_1,tenant_name_2,tenant_date_1,tenant_date_2,admin_approval_name,admin_approval_date,checkout_approval_name,checkout_approval_date,checkout_notes,workflow_status,checklist,created,created_by'
+      });
       inspections = records as InspectionRecord[];
     } catch (loadError) {
       console.error('[inspection history] load failed:', loadError);
@@ -110,6 +149,8 @@
             <th>Property</th>
             <th>Type</th>
             <th>Date</th>
+            <th>Provider</th>
+            <th>Created by</th>
             <th>Stage</th>
             <th>Notes</th>
           </tr>
@@ -134,6 +175,8 @@
               <td>
                 {record.type === 'move-out' ? prettyDate(record.move_out_date) : prettyDate(record.move_in_date)}
               </td>
+              <td>{getProviderName(record)}</td>
+              <td>{getCreatedByName(record)}</td>
               <td>
                 <span class="stage-tag">{workflowLabel(record.workflow_status)}</span>
               </td>
@@ -176,20 +219,50 @@
         </div>
       </div>
 
-      {#if selectedInspection.provider_name || selectedInspection.tenant_name_1 || selectedInspection.tenant_name_2}
-        <div class="signature-block">
-          <h3>Sign-off and participants</h3>
-          <ul>
-            {#if selectedInspection.provider_name}
-              <li><strong>Provider:</strong> {selectedInspection.provider_name}</li>
-            {/if}
-            {#if selectedInspection.tenant_name_1}
-              <li><strong>Tenant 1:</strong> {selectedInspection.tenant_name_1}</li>
-            {/if}
-            {#if selectedInspection.tenant_name_2}
-              <li><strong>Tenant 2:</strong> {selectedInspection.tenant_name_2}</li>
-            {/if}
-          </ul>
+      <div class="signature-block">
+        <h3>Record details</h3>
+        <ul>
+          {#if selectedInspection.provider_name || selectedInspection.provider || selectedInspection.expand?.provider?.name}
+            <li><strong>Provider:</strong> {getProviderName(selectedInspection)}</li>
+          {/if}
+          {#if selectedInspection.created_by || selectedInspection.expand?.created_by?.name}
+            <li><strong>Created by:</strong> {getCreatedByName(selectedInspection)}</li>
+          {/if}
+          {#if selectedInspection.tenant_name_1}
+            <li><strong>Tenant 1:</strong> {selectedInspection.tenant_name_1}</li>
+          {/if}
+          {#if selectedInspection.tenant_name_2}
+            <li><strong>Tenant 2:</strong> {selectedInspection.tenant_name_2}</li>
+          {/if}
+          {#if selectedInspection.provider_date}
+            <li><strong>Provider date:</strong> {prettyDate(selectedInspection.provider_date)}</li>
+          {/if}
+          {#if selectedInspection.tenant_date_1}
+            <li><strong>Tenant date 1:</strong> {prettyDate(selectedInspection.tenant_date_1)}</li>
+          {/if}
+          {#if selectedInspection.tenant_date_2}
+            <li><strong>Tenant date 2:</strong> {prettyDate(selectedInspection.tenant_date_2)}</li>
+          {/if}
+          {#if selectedInspection.admin_approval_name}
+            <li><strong>Admin approval:</strong> {selectedInspection.admin_approval_name}</li>
+          {/if}
+          {#if selectedInspection.checkout_approval_name}
+            <li><strong>Checkout approval:</strong> {selectedInspection.checkout_approval_name}</li>
+          {/if}
+        </ul>
+      </div>
+
+      {#if selectedInspection.notes || selectedInspection.checkout_notes}
+        <div class="notes-block">
+          <h3>Notes</h3>
+          <p>{selectedInspection.notes || selectedInspection.checkout_notes || '—'}</p>
+        </div>
+      {/if}
+
+      {#if selectedInspection.notes && selectedInspection.checkout_notes && selectedInspection.notes !== selectedInspection.checkout_notes}
+        <div class="notes-block">
+          <h3>Checkout notes</h3>
+          <p>{selectedInspection.checkout_notes}</p>
         </div>
       {/if}
 
