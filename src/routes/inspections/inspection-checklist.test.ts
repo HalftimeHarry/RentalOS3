@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { canEditInspectionStatus, isAutoCancelError, isMissingResourceError } from '$lib/inspection/inspectionWorkflow';
+import { canEditInspectionStatus, deriveNextWorkflowStatus, isAutoCancelError, isMissingResourceError } from '$lib/inspection/inspectionWorkflow';
 
 function createItemState() {
   return { na: false, o: false, desc: '' };
@@ -86,6 +86,14 @@ describe('inspection workflow rules', () => {
     expect(canEditInspectionStatus('tenant-reviewed')).toBe(true);
     expect(canEditInspectionStatus('admin-approved')).toBe(false);
     expect(canEditInspectionStatus('checkout-approved')).toBe(false);
+  });
+
+  it('marks a draft inspection as tenant-reviewed when the tenant approves it', () => {
+    expect(deriveNextWorkflowStatus({
+      currentStatus: 'draft',
+      tenantApproved: true,
+      hasTenantChanges: false
+    })).toBe('tenant-reviewed');
   });
 
   it('treats auto-cancelled PocketBase requests as harmless', () => {

@@ -62,6 +62,7 @@ const fieldConfigs = [
   { name: 'checkout_notes', type: 'text', required: false },
   { name: 'workflow_status', type: 'select', required: false, values: ['draft', 'admin-complete', 'tenant-reviewed', 'admin-approved', 'checkout-approved'], maxSelect: 1, minSelect: 0 },
   { name: 'checklist', type: 'json', required: false },
+  { name: 'tenant_approved', type: 'bool', required: false },
   { name: 'created_by', type: 'relation', required: false, maxSelect: 1, minSelect: 0, collectionId: '_pb_users_auth_', cascadeDelete: false }
 ];
 
@@ -93,7 +94,7 @@ const main = async () => {
     listRule: '@request.auth.id != ""',
     viewRule: '@request.auth.id != ""',
     createRule: '@request.auth.id != ""',
-    updateRule: '@request.auth.id != "" && (@request.auth.role = "admin" || @request.auth.id = created_by)',
+    updateRule: '@request.auth.role = "admin" || (@request.auth.id != "" && @request.auth.id = created_by)',
     deleteRule: '@request.auth.role = "admin"',
     fields: normalizedFields
   };
@@ -113,7 +114,7 @@ const main = async () => {
       listRule: '@request.auth.id != ""',
       viewRule: '@request.auth.id != ""',
       createRule: '@request.auth.id != ""',
-      updateRule: '@request.auth.id != "" && (@request.auth.role = "admin" || @request.auth.id = created_by)',
+      updateRule: '@request.auth.role = "admin" || (@request.auth.id != "" && @request.auth.id = created_by)',
       deleteRule: '@request.auth.role = "admin"',
       fields: normalizedFields
     });

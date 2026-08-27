@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { replaceState } from '$app/navigation';
   import { Printer, RotateCcw, Save } from '@lucide/svelte';
   import { pocketbase } from '$lib/pocketbase/PocketBaseProvider';
   import { renterService } from '$lib/services/RenterService';
@@ -253,23 +254,28 @@
     }
   }
 
-  onMount(async () => {
-    const params = new URLSearchParams(window.location.search);
-    const editId = params.get('edit');
+  onMount(() => {
+    const loadInspectionData = async () => {
+      const params = new URLSearchParams(window.location.search);
+      const editId = params.get('edit');
 
-    if (editId) {
-      editInspectionId = editId;
-      try {
-        const record = await pocketbase.client.collection('inspections').getOne(editId);
-        applyInspectionRecord(record);
-      } catch (error) {
-        if (isAutoCancelError(error)) return;
-        console.error('[inspections] failed to load inspection for edit:', error);
-        saveError = 'This inspection could not be loaded for editing.';
+      if (editId) {
+        editInspectionId = editId;
+        try {
+          const record = await pocketbase.client.collection('inspections').getOne(editId);
+          applyInspectionRecord(record);
+        } catch (error) {
+          if (isAutoCancelError(error)) return;
+          console.error('[inspections] failed to load inspection for edit:', error);
+          clearEditInspectionState();
+          saveError = 'This inspection no longer exists or was deleted. A new inspection draft is ready.';
+        }
       }
-    }
 
-    await loadTenantOptionsForAdmin();
+      await loadTenantOptionsForAdmin();
+    };
+
+    void loadInspectionData();
 
     const unsubscribe = pocketbase.client.authStore.onChange(() => {
       void loadTenantOptionsForAdmin();
@@ -278,13 +284,17 @@
     return unsubscribe;
   });
 
-  function resetForm() {
+  function clearEditInspectionState() {
     editInspectionId = null;
     if (typeof window !== 'undefined') {
       const nextUrl = new URL(window.location.href);
       nextUrl.searchParams.delete('edit');
-      window.history.replaceState({}, '', `${nextUrl.pathname}${nextUrl.search}`);
+      replaceState({}, '', `${nextUrl.pathname}${nextUrl.search}`);
     }
+  }
+
+  function resetForm() {
+    clearEditInspectionState();
     workflowStatus = 'draft';
     form = {
       propertyAddress: '2728 B Street, San Diego CA 92102',
@@ -329,6 +339,21 @@
   }
 
   async function saveInspection() {
+    const debugSnapshotAtStart = {
+      editInspectionId,
+      workflowStatus,
+      tenantApproved: form.tenantApproved,
+      tenantName: form.tenants,
+      selectedTenantId,
+      currentTenantId,
+      hasChecklistChanges: hasChecklistChanges(),
+      notes: form.notes,
+      form: JSON.parse(JSON.stringify(form)),
+      sectionStates: JSON.parse(JSON.stringify(sectionStates))
+    };
+
+    console.debug('[inspections submit] start', debugSnapshotAtStart);
+
     const effectiveEditId = editInspectionId ?? (typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('edit') : null);
     if (effectiveEditId) {
       editInspectionId = effectiveEditId;
@@ -346,6 +371,7 @@
     }
 
     if (isInspectionLocked()) {
+      console.warn('[inspections submit] blocked: record is locked', { workflowStatus, nextWorkflowStatus });
       saveError = 'This inspection is locked from editing because it has reached a final approval status.';
       saveMessage = '';
       return;
@@ -355,6 +381,7 @@
     saveMessage = 'Trying to save inspection…';
 
     if (!pocketbase.client.authStore.isValid) {
+      console.warn('[inspections submit] blocked: not authenticated', { authValid: pocketbase.client.authStore.isValid });
       saveError = 'You must be signed in before saving an inspection record.';
       saveMessage = '';
       return;
@@ -364,9 +391,13 @@
     const resolvedTenantId = selectedTenantId || currentTenantId || null;
 
     if (!form.tenants.trim() && !resolvedTenantId) {
+      console.warn('[inspections submit] blocked: no tenant selected or entered', {
+        tenantText: form.tenants,
+        selectedTenantId,
+        currentTenantId
+      });
       saveError = 'Please choose a tenant or enter a tenant name before saving.';
       saveMessage = '';
-      console.warn('[inspections] early save block: no tenant selected or entered');
       return;
     }
 
@@ -374,42 +405,88 @@
     saveError = '';
     saveMessage = '';
 
+    const payload = {
+      type: inspectionType,
+      property_address: form.propertyAddress.trim(),
+      unit_no: form.unitNo.trim(),
+      tenant: resolvedTenantId,
+      tenants: form.tenants.trim() || (selectedTenant?.name ?? ''),
+      move_in_date: form.moveInDate || null,
+      move_out_date: form.moveOutDate || null,
+      other_condition_summary: form.otherConditionSummary,
+      notes: form.notes.trim(),
+      tenant_name_1: form.tenantName1.trim(),
+      tenant_name_2: form.tenantName2.trim(),
+      provider: providerAdminRecord.id,
+      provider_name: providerAdminRecord.name,
+      provider_date: form.providerDate || null,
+      tenant_date_1: form.tenantDate1 || null,
+      tenant_date_2: form.tenantDate2 || null,
+      admin_signature: form.adminSignature.trim(),
+      admin_signature_date: form.adminSignatureDate || null,
+      tenant_signature: form.tenantSignature.trim(),
+      tenant_sign_date: form.tenantSignDate || null,
+      admin_approval_name: form.adminApprovalName.trim(),
+      admin_approval_date: form.adminApprovalDate || null,
+      checkout_approval_name: form.checkoutApprovalName.trim(),
+      checkout_approval_date: form.checkoutApprovalDate || null,
+      checkout_notes: form.checkoutNotes.trim(),
+      workflow_status: nextWorkflowStatus,
+      checklist: JSON.stringify(sectionStates),
+      tenant_approved: form.tenantApproved,
+      created_by: pocketbase.client.authStore.model?.id ?? null
+    };
+
+    const fullDebugPayload = {
+      editId: effectiveEditId ?? null,
+      currentWorkflowStatus: workflowStatus,
+      derivedWorkflowStatus: nextWorkflowStatus,
+      inspectionType,
+      propertyAddress: form.propertyAddress,
+      unitNo: form.unitNo,
+      selectedTenantId,
+      resolvedTenantId,
+      tenants: form.tenants,
+      tenantName1: form.tenantName1,
+      tenantName2: form.tenantName2,
+      moveInDate: form.moveInDate,
+      moveOutDate: form.moveOutDate,
+      otherConditionSummary: form.otherConditionSummary,
+      notes: form.notes,
+      providerName: form.providerName,
+      providerDate: form.providerDate,
+      tenantDate1: form.tenantDate1,
+      tenantDate2: form.tenantDate2,
+      adminSignature: form.adminSignature,
+      adminSignatureDate: form.adminSignatureDate,
+      tenantSignature: form.tenantSignature,
+      tenantSignDate: form.tenantSignDate,
+      adminApprovalName: form.adminApprovalName,
+      adminApprovalDate: form.adminApprovalDate,
+      checkoutApprovalName: form.checkoutApprovalName,
+      checkoutApprovalDate: form.checkoutApprovalDate,
+      checkoutNotes: form.checkoutNotes,
+      tenantApproved: form.tenantApproved,
+      checklist: JSON.parse(JSON.stringify(sectionStates)),
+      rawPayload: payload
+    };
+
     try {
-      const payload = {
-        type: inspectionType,
-        property_address: form.propertyAddress.trim(),
-        unit_no: form.unitNo.trim(),
-        tenant: resolvedTenantId,
-        tenants: form.tenants.trim() || (selectedTenant?.name ?? ''),
-        move_in_date: form.moveInDate || null,
-        move_out_date: form.moveOutDate || null,
-        other_condition_summary: form.otherConditionSummary,
-        notes: form.notes.trim(),
-        tenant_name_1: form.tenantName1.trim(),
-        tenant_name_2: form.tenantName2.trim(),
-        provider: providerAdminRecord.id,
-        provider_name: providerAdminRecord.name,
-        provider_date: form.providerDate || null,
-        tenant_date_1: form.tenantDate1 || null,
-        tenant_date_2: form.tenantDate2 || null,
-        admin_signature: form.adminSignature.trim(),
-        admin_signature_date: form.adminSignatureDate || null,
-        tenant_signature: form.tenantSignature.trim(),
-        tenant_sign_date: form.tenantSignDate || null,
-        admin_approval_name: form.adminApprovalName.trim(),
-        admin_approval_date: form.adminApprovalDate || null,
-        checkout_approval_name: form.checkoutApprovalName.trim(),
-        checkout_approval_date: form.checkoutApprovalDate || null,
-        checkout_notes: form.checkoutNotes.trim(),
-        workflow_status: nextWorkflowStatus,
-        checklist: JSON.stringify(sectionStates),
-        tenant_approved: form.tenantApproved,
-        created_by: pocketbase.client.authStore.model?.id ?? null
-      };
+      console.debug('[inspections submit] full payload dump', fullDebugPayload);
+      console.debug('[inspections submit] update target', {
+        editId: effectiveEditId ?? null,
+        payload
+      });
 
       const record = effectiveEditId
         ? await pocketbase.client.collection('inspections').update(effectiveEditId, payload)
         : await pocketbase.client.collection('inspections').create(payload);
+
+      console.debug('[inspections submit] response', {
+        id: record?.id ?? null,
+        workflow_status: record?.workflow_status ?? null,
+        tenant_approved: record?.tenant_approved ?? null
+      });
 
       if (effectiveEditId) {
         saveMessage = `Inspection updated${record?.id ? ` for ${form.tenants.trim()}` : ''}.`;
@@ -418,16 +495,21 @@
         if (typeof window !== 'undefined') {
           const nextUrl = new URL(window.location.href);
           nextUrl.searchParams.delete('edit');
-          window.history.replaceState({}, '', `${nextUrl.pathname}${nextUrl.search}`);
+          replaceState({}, '', `${nextUrl.pathname}${nextUrl.search}`);
         }
       } else {
         saveMessage = `Inspection saved${record?.id ? ` for ${form.tenants.trim()}` : ''}.`;
         console.log('[inspections page] saved record:', record);
       }
     } catch (error) {
-      console.error('[inspections page] save failed:', error);
+      console.error('[inspections page] save failed:', {
+        editId: effectiveEditId ?? null,
+        payload: payload ?? null,
+        error
+      });
       if (isMissingResourceError(error)) {
-        saveError = 'The inspections collection is missing or this record no longer exists. Run the inspection schema fixer and refresh the page.';
+        clearEditInspectionState();
+        saveError = 'This inspection record no longer exists. The stale edit link was cleared and you can start a new inspection.';
       } else {
         saveError = 'We could not save this inspection. Make sure the PocketBase inspections collection exists and the current user has permission.';
       }
@@ -1002,7 +1084,7 @@
   }
 
   @media print {
-    body {
+    :global(body) {
       background: white;
     }
 

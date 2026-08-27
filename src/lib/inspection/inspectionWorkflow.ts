@@ -33,11 +33,11 @@ export function deriveNextWorkflowStatus({
   tenantApproved: boolean;
   hasTenantChanges: boolean;
 }): InspectionWorkflowStatus {
-  if (currentStatus === 'draft' && tenantApproved && hasTenantChanges) {
+  if ((currentStatus === 'draft' || currentStatus === 'admin-complete') && tenantApproved) {
     return 'tenant-reviewed';
   }
 
-  if (currentStatus === 'draft' && tenantApproved) {
+  if (currentStatus === 'draft' && !tenantApproved && hasTenantChanges) {
     return 'draft';
   }
 
