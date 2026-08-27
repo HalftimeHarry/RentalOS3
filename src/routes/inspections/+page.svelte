@@ -3,7 +3,7 @@
   import { Printer, RotateCcw, Save } from '@lucide/svelte';
   import { pocketbase } from '$lib/pocketbase/PocketBaseProvider';
   import { renterService } from '$lib/services/RenterService';
-  import { canEditInspectionStatus, type InspectionWorkflowStatus } from '$lib/inspection/inspectionWorkflow';
+  import { canEditInspectionStatus, deriveNextWorkflowStatus, isAutoCancelError, isMissingResourceError, type InspectionWorkflowStatus } from '$lib/inspection/inspectionWorkflow';
 
   type InspectionType = 'move-in' | 'move-out';
   type WorkflowStatus = InspectionWorkflowStatus;
@@ -102,6 +102,7 @@
     notes: '',
     tenantName1: '',
     tenantName2: '',
+    tenantApproved: false,
     providerName: '',
     providerDate: '',
     tenantDate1: '',
@@ -117,6 +118,7 @@
     checkoutNotes: ''
   });
   let sectionStates = $state<Record<string, Record<string, ItemState>>>(initialSectionState);
+  let originalSectionStates = $state<Record<string, Record<string, ItemState>>>(initialSectionState);
   let saveError = $state('');
   let saveMessage = $state('');
   let savingInspection = $state(false);
@@ -126,6 +128,14 @@
     if (!editInspectionId) return false;
     return !canEditInspectionStatus(workflowStatus);
   };
+
+  function cloneSectionState(state: Record<string, Record<string, ItemState>>) {
+    return JSON.parse(JSON.stringify(state)) as Record<string, Record<string, ItemState>>;
+  }
+
+  function hasChecklistChanges() {
+    return JSON.stringify(sectionStates) !== JSON.stringify(originalSectionStates);
+  }
 
   function applyInspectionRecord(record: Record<string, any>) {
     const nextType = record.type === 'move-out' ? 'move-out' : 'move-in';
@@ -141,6 +151,7 @@
       notes: record.notes ?? '',
       tenantName1: record.tenant_name_1 ?? '',
       tenantName2: record.tenant_name_2 ?? '',
+      tenantApproved: Boolean(record.tenant_approved),
       providerName: record.provider_name ?? '',
       providerDate: record.provider_date ?? '',
       tenantDate1: record.tenant_date_1 ?? '',
@@ -169,11 +180,13 @@
               ];
             })
           );
+          originalSectionStates = cloneSectionState(sectionStates);
         }
       } catch {
         sectionStates = Object.fromEntries(
           sections.map((section) => [section.title, Object.fromEntries(section.items.map((item) => [item, createItemState()]))])
         );
+        originalSectionStates = cloneSectionState(sectionStates);
       }
     }
 
@@ -234,8 +247,7 @@
       }
     } catch (error) {
       if (requestId !== tenantOptionsRequestId) return;
-      const isAutoCancel = error instanceof Error && (error.name === 'AbortError' || error.message?.toLowerCase().includes('aborted') || error.message?.toLowerCase().includes('autocancelled'));
-      if (isAutoCancel) return;
+      if (isAutoCancelError(error)) return;
       console.error('[inspections] failed to load tenant options for admin:', error);
       tenantOptions = [];
     }
@@ -251,6 +263,7 @@
         const record = await pocketbase.client.collection('inspections').getOne(editId);
         applyInspectionRecord(record);
       } catch (error) {
+        if (isAutoCancelError(error)) return;
         console.error('[inspections] failed to load inspection for edit:', error);
         saveError = 'This inspection could not be loaded for editing.';
       }
@@ -283,6 +296,7 @@
       notes: '',
       tenantName1: '',
       tenantName2: '',
+      tenantApproved: false,
       providerName: '',
       providerDate: '',
       tenantDate1: '',
@@ -298,6 +312,7 @@
       checkoutNotes: ''
     };
     sectionStates = createSectionState();
+    originalSectionStates = cloneSectionState(sectionStates);
   }
 
   function printForm() {
@@ -317,6 +332,17 @@
     const effectiveEditId = editInspectionId ?? (typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('edit') : null);
     if (effectiveEditId) {
       editInspectionId = effectiveEditId;
+    }
+
+    const currentHasChecklistChanges = hasChecklistChanges();
+    const nextWorkflowStatus = deriveNextWorkflowStatus({
+      currentStatus: workflowStatus,
+      tenantApproved: form.tenantApproved,
+      hasTenantChanges: currentHasChecklistChanges || Boolean(form.notes.trim())
+    });
+
+    if (workflowStatus !== nextWorkflowStatus) {
+      workflowStatus = nextWorkflowStatus;
     }
 
     if (isInspectionLocked()) {
@@ -375,8 +401,9 @@
         checkout_approval_name: form.checkoutApprovalName.trim(),
         checkout_approval_date: form.checkoutApprovalDate || null,
         checkout_notes: form.checkoutNotes.trim(),
-        workflow_status: workflowStatus,
+        workflow_status: nextWorkflowStatus,
         checklist: JSON.stringify(sectionStates),
+        tenant_approved: form.tenantApproved,
         created_by: pocketbase.client.authStore.model?.id ?? null
       };
 
@@ -399,7 +426,11 @@
       }
     } catch (error) {
       console.error('[inspections page] save failed:', error);
-      saveError = 'We could not save this inspection. Make sure the PocketBase inspections collection exists and the current user has permission.';
+      if (isMissingResourceError(error)) {
+        saveError = 'The inspections collection is missing or this record no longer exists. Run the inspection schema fixer and refresh the page.';
+      } else {
+        saveError = 'We could not save this inspection. Make sure the PocketBase inspections collection exists and the current user has permission.';
+      }
     } finally {
       savingInspection = false;
     }
@@ -531,6 +562,11 @@
   <label class="checkbox-row">
     <input bind:checked={form.otherConditionSummary} type="checkbox" />
     <span>Checking this box will prepare a summary of all Other Condition items (O) checked below.</span>
+  </label>
+
+  <label class="checkbox-row">
+    <input bind:checked={form.tenantApproved} type="checkbox" />
+    <span>Tenant has reviewed and approved this inspection.</span>
   </label>
 
   {#each sections as section}

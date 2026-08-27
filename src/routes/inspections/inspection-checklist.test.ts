@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { canEditInspectionStatus } from '$lib/inspection/inspectionWorkflow';
+import { canEditInspectionStatus, isAutoCancelError, isMissingResourceError } from '$lib/inspection/inspectionWorkflow';
 
 function createItemState() {
   return { na: false, o: false, desc: '' };
@@ -86,5 +86,17 @@ describe('inspection workflow rules', () => {
     expect(canEditInspectionStatus('tenant-reviewed')).toBe(true);
     expect(canEditInspectionStatus('admin-approved')).toBe(false);
     expect(canEditInspectionStatus('checkout-approved')).toBe(false);
+  });
+
+  it('treats auto-cancelled PocketBase requests as harmless', () => {
+    expect(isAutoCancelError(new Error('The request was aborted'))).toBe(true);
+    expect(isAutoCancelError(new Error('signal is aborted without reason'))).toBe(true);
+    expect(isAutoCancelError(new Error('network error'))).toBe(false);
+  });
+
+  it('detects missing resource errors from PocketBase 404 responses', () => {
+    const error = { name: 'ClientResponseError', status: 404, message: 'The requested resource wasn\'t found.' };
+    expect(isMissingResourceError(error)).toBe(true);
+    expect(isMissingResourceError(new Error('network error'))).toBe(false);
   });
 });
