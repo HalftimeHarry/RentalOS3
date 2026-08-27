@@ -44,10 +44,32 @@
     return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(date);
   }
 
-  function normalizeImages(value?: string | string[]) {
+  function normalizeImages(value?: string | string[] | Record<string, unknown> | Array<Record<string, unknown>> | null) {
     if (!value) return [];
-    if (Array.isArray(value)) return value.filter(Boolean);
-    return [value];
+
+    const candidates = Array.isArray(value) ? value : [value];
+
+    return candidates.flatMap((entry) => {
+      if (typeof entry === 'string') {
+        return entry.trim() ? [entry] : [];
+      }
+
+      if (entry && typeof entry === 'object') {
+        const record = entry as Record<string, unknown>;
+        const candidate = typeof record.url === 'string' ? record.url :
+          typeof record.src === 'string' ? record.src :
+          typeof record.path === 'string' ? record.path :
+          typeof record.file === 'string' ? record.file : '';
+
+        if (!candidate.trim()) {
+          console.warn('[maintenance] filtered unsupported object-valued image record', entry);
+        }
+
+        return candidate.trim() ? [candidate] : [];
+      }
+
+      return [];
+    });
   }
 
   async function loadMaintenanceRequests() {

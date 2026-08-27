@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { buildInspectionRecordDetailEntries, isAutoCancelError } from '$lib/inspection/inspectionWorkflow';
   import { pocketbase } from '$lib/pocketbase/PocketBaseProvider';
 
   type InspectionRecord = {
@@ -53,6 +54,8 @@
         return 'Admin completed';
       case 'tenant-reviewed':
         return 'Tenant reviewed';
+      case 'repair-needed':
+        return 'Fix required';
       case 'admin-approved':
         return 'Admin approved';
       case 'checkout-approved':
@@ -115,6 +118,7 @@
       });
       inspections = records as InspectionRecord[];
     } catch (loadError) {
+      if (isAutoCancelError(loadError)) return;
       console.error('[inspection history] load failed:', loadError);
       error = 'Unable to load inspection history. Please check the inspections collection and permissions.';
     } finally {
@@ -225,12 +229,9 @@
       <div class="signature-block">
         <h3>Record details</h3>
         <ul>
-          {#if selectedInspection.provider_name || selectedInspection.provider || selectedInspection.expand?.provider?.name}
-            <li><strong>Provider:</strong> {getProviderName(selectedInspection)}</li>
-          {/if}
-          {#if selectedInspection.created_by || selectedInspection.expand?.created_by?.name}
-            <li><strong>Created by:</strong> {getCreatedByName(selectedInspection)}</li>
-          {/if}
+          {#each buildInspectionRecordDetailEntries(selectedInspection) as detail}
+            <li><strong>{detail.label}:</strong> {detail.value}</li>
+          {/each}
           {#if selectedInspection.tenant_name_1}
             <li><strong>Tenant 1:</strong> {selectedInspection.tenant_name_1}</li>
           {/if}
@@ -245,12 +246,6 @@
           {/if}
           {#if selectedInspection.tenant_date_2}
             <li><strong>Tenant date 2:</strong> {prettyDate(selectedInspection.tenant_date_2)}</li>
-          {/if}
-          {#if selectedInspection.admin_approval_name}
-            <li><strong>Admin approval:</strong> {selectedInspection.admin_approval_name}</li>
-          {/if}
-          {#if selectedInspection.checkout_approval_name}
-            <li><strong>Checkout approval:</strong> {selectedInspection.checkout_approval_name}</li>
           {/if}
         </ul>
       </div>

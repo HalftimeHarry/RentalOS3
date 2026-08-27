@@ -90,7 +90,9 @@
 				{/if}
 				<a class:active={pathname === '/rental'} href="/rental"><Building2 size={17} /> Rental</a>
 				<a class:active={pathname === '/maintenance'} href="/maintenance"><Wrench size={17} /> Maintenance</a>
-				<a class:active={pathname === '/inspections'} href="/inspections"><ClipboardCheck size={17} /> Inspections</a>
+				{#if isAdmin}
+					<a class:active={pathname === '/inspections'} href="/inspections"><ClipboardCheck size={17} /> Inspections</a>
+				{/if}
 				<a class:active={pathname === '/inspections/history'} href="/inspections/history"><ClipboardCheck size={17} /> Inspection history</a>
 				{#if isAdmin}
 					<div class="nav-group-label">Admin tools</div>

@@ -1,10 +1,22 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { replaceState } from '$app/navigation';
-  import { Printer, RotateCcw, Save } from '@lucide/svelte';
+  import { Copy, Printer, RotateCcw, Save } from '@lucide/svelte';
   import { pocketbase } from '$lib/pocketbase/PocketBaseProvider';
   import { renterService } from '$lib/services/RenterService';
-  import { canEditInspectionStatus, deriveNextWorkflowStatus, isAutoCancelError, isMissingResourceError, type InspectionWorkflowStatus } from '$lib/inspection/inspectionWorkflow';
+  import {
+    buildMoveOutPrefillFromMoveIn,
+    canEditInspectionStatus,
+    canReopenInspectionForRepair,
+    deriveNextWorkflowStatus,
+    getInspectionStageMeta,
+    isAutoCancelError,
+    isMissingResourceError,
+    repairRequiredAdminNote,
+    reopenInspectionForRepairStatus,
+    validateInspectionSignatureRequirements,
+    type InspectionWorkflowStatus
+  } from '$lib/inspection/inspectionWorkflow';
 
   type InspectionType = 'move-in' | 'move-out';
   type WorkflowStatus = InspectionWorkflowStatus;
@@ -99,7 +111,7 @@
     tenants: '',
     moveInDate: '',
     moveOutDate: '',
-    otherConditionSummary: false,
+    otherConditionSummary: true,
     notes: '',
     tenantName1: '',
     tenantName2: '',
@@ -125,10 +137,110 @@
   let savingInspection = $state(false);
   let tenantOptionsRequestId = 0;
 
+  const moveInWorkflowStages = [
+    {
+      key: 'draft',
+      title: '1. Move-in baseline',
+      description: 'Record the starting condition of the unit before the tenant moves in.'
+    },
+    {
+      key: 'admin-complete',
+      title: '2. Admin review',
+      description: 'The manager completes the move-in checklist and signs the baseline record.'
+    },
+    {
+      key: 'tenant-reviewed',
+      title: '3. Tenant review',
+      description: 'The tenant checks the record, adds notes, and confirms the condition.'
+    },
+    {
+      key: 'repair-needed',
+      title: '4. Fix required',
+      description: 'Any damage or issues must be corrected before the move-in file is finalized.'
+    },
+    {
+      key: 'admin-approved',
+      title: '5. Final approval',
+      description: 'The move-in baseline is approved and ready to use as the starting point.'
+    },
+    {
+      key: 'checkout-approved',
+      title: '6. Move-in complete',
+      description: 'The record is locked in as the accepted baseline for the tenancy.'
+    }
+  ] as const;
+
+  const moveOutWorkflowStages = [
+    {
+      key: 'draft',
+      title: '1. Move-out comparison',
+      description: 'Start from the move-in baseline and compare the current condition at checkout.'
+    },
+    {
+      key: 'admin-complete',
+      title: '2. Admin review',
+      description: 'The manager records the current condition and signs the move-out review.'
+    },
+    {
+      key: 'tenant-reviewed',
+      title: '3. Tenant review',
+      description: 'The tenant reviews the comparison report and responds to any concerns.'
+    },
+    {
+      key: 'repair-needed',
+      title: '4. Damage to resolve',
+      description: 'Any outstanding damage must be addressed before the deposit decision is finalized.'
+    },
+    {
+      key: 'admin-approved',
+      title: '5. Final approval',
+      description: 'The move-out inspection is accepted after repairs and any required adjustments.'
+    },
+    {
+      key: 'checkout-approved',
+      title: '6. Checkout approved',
+      description: 'The final walk-through is complete and the deposit release can proceed.'
+    }
+  ] as const;
+
+  const workflowStageMeta = $derived(getInspectionStageMeta(workflowStatus));
+  const activeWorkflowStages = $derived(inspectionType === 'move-out' ? moveOutWorkflowStages : moveInWorkflowStages);
+  const canReopenForRepair = $derived(canReopenInspectionForRepair(workflowStatus));
+  const getTodayDateValue = () => new Date().toISOString().slice(0, 10);
+  const missingAdminDraftSignatureInfo = $derived(
+    workflowStatus === 'draft' && (!form.adminSignature.trim() || !form.adminSignatureDate.trim())
+  );
+  const missingTenantApprovalSignatureInfo = $derived(
+    form.tenantApproved && (!form.tenantSignature.trim() || !form.tenantSignDate.trim())
+  );
+  const canSaveInspection = $derived(
+    !missingAdminDraftSignatureInfo && !missingTenantApprovalSignatureInfo && !isInspectionLocked()
+  );
+
+  function ensureApprovalDateDefaults() {
+    if (form.adminApprovalName.trim() && !form.adminApprovalDate) {
+      form.adminApprovalDate = getTodayDateValue();
+    }
+
+    if (form.checkoutApprovalName.trim() && !form.checkoutApprovalDate) {
+      form.checkoutApprovalDate = getTodayDateValue();
+    }
+
+    if (form.tenantApproved && !form.tenantSignDate) {
+      form.tenantSignDate = getTodayDateValue();
+    }
+  }
+
   const isInspectionLocked = () => {
     if (!editInspectionId) return false;
     return !canEditInspectionStatus(workflowStatus);
   };
+
+  function applyRepairRequiredGuidance(nextStatus: WorkflowStatus) {
+    if (nextStatus === 'repair-needed' && !form.checkoutNotes.trim()) {
+      form.checkoutNotes = repairRequiredAdminNote;
+    }
+  }
 
   function cloneSectionState(state: Record<string, Record<string, ItemState>>) {
     return JSON.parse(JSON.stringify(state)) as Record<string, Record<string, ItemState>>;
@@ -286,11 +398,18 @@
 
   function clearEditInspectionState() {
     editInspectionId = null;
+    saveError = '';
+    saveMessage = '';
     if (typeof window !== 'undefined') {
       const nextUrl = new URL(window.location.href);
       nextUrl.searchParams.delete('edit');
       replaceState({}, '', `${nextUrl.pathname}${nextUrl.search}`);
     }
+  }
+
+  function getCurrentEditIdFromUrl() {
+    if (typeof window === 'undefined') return null;
+    return new URLSearchParams(window.location.search).get('edit');
   }
 
   function resetForm() {
@@ -302,17 +421,17 @@
       tenants: '',
       moveInDate: '',
       moveOutDate: '',
-      otherConditionSummary: false,
+      otherConditionSummary: true,
       notes: '',
       tenantName1: '',
       tenantName2: '',
       tenantApproved: false,
       providerName: '',
-      providerDate: '',
+      providerDate: getTodayDateValue(),
       tenantDate1: '',
       tenantDate2: '',
       adminSignature: '',
-      adminSignatureDate: '',
+      adminSignatureDate: getTodayDateValue(),
       tenantSignature: '',
       tenantSignDate: '',
       adminApprovalName: '',
@@ -325,8 +444,61 @@
     originalSectionStates = cloneSectionState(sectionStates);
   }
 
+  async function createMoveOutFromLastMoveIn() {
+    if (!pocketbase.client.authStore.isValid) {
+      saveError = 'You must be signed in before creating a move-out shortcut.';
+      saveMessage = '';
+      return;
+    }
+
+    try {
+      const moveInRecords = await pocketbase.client.collection('inspections').getFullList({
+        filter: 'type = "move-in"',
+        sort: '-created',
+        fields: 'id,tenant,tenants,property_address,unit_no,tenant_name_1,tenant_name_2'
+      });
+
+      const latestMoveIn = moveInRecords[0];
+      if (!latestMoveIn) {
+        saveError = 'No move-in inspection has been saved yet, so there is no record to copy from.';
+        saveMessage = '';
+        return;
+      }
+
+      const prefill = buildMoveOutPrefillFromMoveIn(latestMoveIn as Record<string, any>);
+      form.tenants = prefill.tenantName;
+      selectedTenantId = prefill.tenantId;
+      form.propertyAddress = prefill.propertyAddress;
+      form.unitNo = prefill.unitNo;
+      form.tenantName1 = prefill.tenantName1;
+      form.tenantName2 = prefill.tenantName2;
+      inspectionType = 'move-out';
+      workflowStatus = 'draft';
+      saveError = '';
+      saveMessage = 'Move-out form loaded from the latest move-in record.';
+    } catch (error) {
+      if (isAutoCancelError(error)) return;
+      console.error('[inspections] failed to create move-out from last move-in:', error);
+      saveError = 'Unable to find the last move-in record to copy from.';
+      saveMessage = '';
+    }
+  }
+
   function printForm() {
     window.print();
+  }
+
+  function reopenInspectionForRepair() {
+    const nextStatus = reopenInspectionForRepairStatus(workflowStatus);
+    if (!canReopenForRepair) return;
+
+    workflowStatus = nextStatus;
+    const fixNote = 'Fix expense reopened this inspection for repair review until the issue is resolved.';
+    form.checkoutNotes = form.checkoutNotes.trim()
+      ? `${form.checkoutNotes.trim()}\n${fixNote}`
+      : fixNote;
+
+    saveInspection();
   }
 
   function handleTenantSelection(event: Event) {
@@ -354,9 +526,28 @@
 
     console.debug('[inspections submit] start', debugSnapshotAtStart);
 
-    const effectiveEditId = editInspectionId ?? (typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('edit') : null);
-    if (effectiveEditId) {
-      editInspectionId = effectiveEditId;
+    const urlEditId = getCurrentEditIdFromUrl();
+    const effectiveEditId = urlEditId ?? editInspectionId;
+
+    if (urlEditId) {
+      editInspectionId = urlEditId;
+    } else if (!urlEditId && editInspectionId) {
+      editInspectionId = null;
+    }
+
+    const validation = validateInspectionSignatureRequirements({
+      currentStatus: workflowStatus,
+      adminSignature: form.adminSignature,
+      adminSignatureDate: form.adminSignatureDate,
+      tenantApproved: form.tenantApproved,
+      tenantSignature: form.tenantSignature,
+      tenantSignDate: form.tenantSignDate
+    });
+
+    if (!validation.isValid) {
+      saveError = validation.message;
+      saveMessage = '';
+      return;
     }
 
     const currentHasChecklistChanges = hasChecklistChanges();
@@ -471,6 +662,19 @@
       rawPayload: payload
     };
 
+    if (!effectiveEditId) {
+      if (!form.providerDate) {
+        form.providerDate = getTodayDateValue();
+      }
+      if (!form.adminSignatureDate) {
+        form.adminSignatureDate = getTodayDateValue();
+      }
+      payload.provider_date = form.providerDate;
+      payload.admin_signature_date = form.adminSignatureDate || null;
+    }
+
+    ensureApprovalDateDefaults();
+
     try {
       console.debug('[inspections submit] full payload dump', fullDebugPayload);
       console.debug('[inspections submit] update target', {
@@ -502,15 +706,21 @@
         console.log('[inspections page] saved record:', record);
       }
     } catch (error) {
-      console.error('[inspections page] save failed:', {
-        editId: effectiveEditId ?? null,
-        payload: payload ?? null,
-        error
-      });
       if (isMissingResourceError(error)) {
+        console.warn('[inspections page] stale inspection record detected; clearing edit state', {
+          editId: effectiveEditId ?? null,
+          payload: payload ?? null,
+          error
+        });
         clearEditInspectionState();
+        resetForm();
         saveError = 'This inspection record no longer exists. The stale edit link was cleared and you can start a new inspection.';
       } else {
+        console.error('[inspections page] save failed:', {
+          editId: effectiveEditId ?? null,
+          payload: payload ?? null,
+          error
+        });
         saveError = 'We could not save this inspection. Make sure the PocketBase inspections collection exists and the current user has permission.';
       }
     } finally {
@@ -550,6 +760,12 @@
     <button class:active={inspectionType === 'move-in'} type="button" class="tab-button" onclick={() => (inspectionType = 'move-in')}>Move-in</button>
     <button class:active={inspectionType === 'move-out'} type="button" class="tab-button" onclick={() => (inspectionType = 'move-out')}>Move-out</button>
   </div>
+
+  {#if inspectionType === 'move-out'}
+    <div class="shortcut-row">
+      <button class="button secondary-button" type="button" onclick={createMoveOutFromLastMoveIn}><Copy size={15} /> Create move-out from last move-in</button>
+    </div>
+  {/if}
 
   <div class="top-grid">
     <label class="field">
@@ -603,36 +819,66 @@
 
   <div class="workflow-panel">
     <div class="workflow-header">
-      <h2>Shared inspection workflow</h2>
+      <h2>{inspectionType === 'move-out' ? 'Move-out comparison journey' : 'Move-in baseline journey'}</h2>
       <label class="field compact-field">
         <span>Current stage</span>
-        <select bind:value={workflowStatus} disabled={isInspectionLocked()}>
+        <select
+          bind:value={workflowStatus}
+          onchange={(event) => {
+            const nextStatus = (event.currentTarget as HTMLSelectElement).value as WorkflowStatus;
+            workflowStatus = nextStatus;
+            applyRepairRequiredGuidance(nextStatus);
+          }}
+          disabled={isInspectionLocked()}
+        >
           <option value="draft">Draft</option>
-          <option value="admin-complete">Admin completed initial review</option>
-          <option value="tenant-reviewed">Tenant notes and signature added</option>
+          <option value="admin-complete">Admin inspection complete</option>
+          <option value="tenant-reviewed">Tenant reviewed and signed</option>
+          <option value="repair-needed">Fix required</option>
           <option value="admin-approved">Admin approved</option>
-          <option value="checkout-approved">Checkout comparison approved</option>
+          <option value="checkout-approved">Checkout approved</option>
         </select>
       </label>
     </div>
+
+    {#if workflowStatus === 'repair-needed'}
+      <div class="inline-alert warning-alert" role="alert">{repairRequiredAdminNote}</div>
+    {/if}
+
+    {#if missingAdminDraftSignatureInfo}
+      <div class="inline-alert warning-alert" role="alert">Admin signature and signature date are required before saving a draft inspection.</div>
+    {/if}
+
+    {#if missingTenantApprovalSignatureInfo}
+      <div class="inline-alert warning-alert" role="alert">Tenant signature and tenant sign date are required before the tenant approval can be finalized.</div>
+    {/if}
 
     {#if editInspectionId && isInspectionLocked()}
       <div class="inline-alert warning-alert" role="status">This record is locked for editing because it has reached final approval.</div>
     {/if}
 
+    <div class="workflow-status-banner">
+      <div>
+        <span class="mini-label">Current step</span>
+        <h3>{workflowStageMeta.label}</h3>
+      </div>
+      <p>{workflowStageMeta.description}</p>
+      <small>Next: {workflowStageMeta.nextAction}</small>
+    </div>
+
     <div class="workflow-grid">
-      <div class="workflow-card">
-        <h3>1. Admin initial review</h3>
-        <p>Property manager completes the condition checklist and signs below.</p>
-      </div>
-      <div class="workflow-card">
-        <h3>2. Tenant notes</h3>
-        <p>Tenant adds remarks and signs after reviewing the report.</p>
-      </div>
-      <div class="workflow-card">
-        <h3>3. Final admin approval</h3>
-        <p>Admin reviews both sets of notes and approves before or at checkout.</p>
-      </div>
+      {#each activeWorkflowStages as stage}
+        <div
+          class:active={workflowStatus === stage.key}
+          class:done={['admin-complete','tenant-reviewed','repair-needed','admin-approved','checkout-approved'].includes(workflowStatus) &&
+            ['draft','admin-complete','tenant-reviewed','repair-needed','admin-approved','checkout-approved'].indexOf(stage.key) <
+            ['draft','admin-complete','tenant-reviewed','repair-needed','admin-approved','checkout-approved'].indexOf(workflowStatus)}
+          class="workflow-card"
+        >
+          <h3>{stage.title}</h3>
+          <p>{stage.description}</p>
+        </div>
+      {/each}
     </div>
   </div>
 
@@ -718,11 +964,11 @@
     </label>
     <label class="field">
       <span>Admin signature</span>
-      <input bind:value={form.adminSignature} type="text" placeholder="Dustin Dinsmore" />
+      <input bind:value={form.adminSignature} type="text" placeholder="Dustin Dinsmore" class:required-field={missingAdminDraftSignatureInfo} />
     </label>
     <label class="field short-field">
       <span>Signature date</span>
-      <input bind:value={form.adminSignatureDate} type="date" />
+      <input bind:value={form.adminSignatureDate} type="date" class:required-field={missingAdminDraftSignatureInfo} />
     </label>
     <label class="field">
       <span>Tenant</span>
@@ -734,15 +980,24 @@
     </label>
     <label class="field">
       <span>Tenant signature</span>
-      <input bind:value={form.tenantSignature} type="text" placeholder="Tenant signature" />
+      <input bind:value={form.tenantSignature} type="text" placeholder="Tenant signature" class:required-field={missingTenantApprovalSignatureInfo} />
     </label>
     <label class="field short-field">
       <span>Tenant sign date</span>
-      <input bind:value={form.tenantSignDate} type="date" />
+      <input bind:value={form.tenantSignDate} type="date" class:required-field={missingTenantApprovalSignatureInfo} />
     </label>
     <label class="field">
       <span>Admin approval</span>
-      <input bind:value={form.adminApprovalName} type="text" placeholder="Approved by" />
+      <input
+        bind:value={form.adminApprovalName}
+        type="text"
+        placeholder="Approved by"
+        onchange={() => {
+          if (form.adminApprovalName.trim() && !form.adminApprovalDate) {
+            form.adminApprovalDate = getTodayDateValue();
+          }
+        }}
+      />
     </label>
     <label class="field short-field">
       <span>Approval date</span>
@@ -750,7 +1005,16 @@
     </label>
     <label class="field">
       <span>Checkout approval</span>
-      <input bind:value={form.checkoutApprovalName} type="text" placeholder="Checkout approved by" />
+      <input
+        bind:value={form.checkoutApprovalName}
+        type="text"
+        placeholder="Checkout approved by"
+        onchange={() => {
+          if (form.checkoutApprovalName.trim() && !form.checkoutApprovalDate) {
+            form.checkoutApprovalDate = getTodayDateValue();
+          }
+        }}
+      />
     </label>
     <label class="field short-field">
       <span>Checkout date</span>
@@ -765,8 +1029,12 @@
     </label>
   </div>
 
-  <div class="form-footer">
-    <button class="button" type="button" onclick={saveInspection} disabled={savingInspection || isInspectionLocked()}><Save size={15} /> {savingInspection ? 'Saving...' : isInspectionLocked() ? 'Locked' : 'Save inspection'}</button>
+  <div class="form-footer fix-row">
+    <button class="button secondary-button" type="button" onclick={printForm}><Printer size={15} /> Print approved sheet</button>
+    {#if canReopenForRepair}
+      <button class="button warning-button" type="button" onclick={reopenInspectionForRepair}>Add fix expense</button>
+    {/if}
+    <button class="button" type="button" onclick={saveInspection} disabled={savingInspection || !canSaveInspection}><Save size={15} /> {savingInspection ? 'Saving...' : !canSaveInspection ? 'Requirements missing' : 'Save inspection'}</button>
   </div>
 </section>
 
@@ -865,6 +1133,12 @@
     font: inherit;
   }
 
+  .required-field {
+    border-color: #c77d41 !important;
+    background: #fffaf2 !important;
+    box-shadow: inset 0 0 0 1px rgba(199, 125, 65, 0.15);
+  }
+
   .field textarea {
     min-height: 120px;
     resize: vertical;
@@ -911,6 +1185,37 @@
     gap: 12px;
   }
 
+  .workflow-status-banner {
+    border: 1px solid #dfe8df;
+    border-radius: 12px;
+    background: linear-gradient(135deg, #f7faf7, #eef6f3);
+    padding: 14px 16px;
+    display: grid;
+    gap: 8px;
+  }
+
+  .mini-label {
+    display: inline-block;
+    color: #688078;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .workflow-status-banner h3 {
+    margin: 4px 0 0;
+    color: #183b35;
+    font-size: 1rem;
+  }
+
+  .workflow-status-banner p,
+  .workflow-status-banner small {
+    margin: 0;
+    color: #405b57;
+    line-height: 1.5;
+  }
+
   .workflow-card {
     border: 1px solid #dfe8df;
     border-radius: 12px;
@@ -918,6 +1223,18 @@
     padding: 14px;
     display: grid;
     gap: 6px;
+    transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
+  }
+
+  .workflow-card.active {
+    border-color: #183b35;
+    box-shadow: 0 8px 24px rgba(24, 59, 53, 0.08);
+    transform: translateY(-1px);
+  }
+
+  .workflow-card.done {
+    border-color: #7ea79d;
+    background: #f3faf6;
   }
 
   .workflow-card h3 {
@@ -1039,7 +1356,18 @@
   .form-footer {
     display: flex;
     justify-content: flex-end;
+    gap: 10px;
+    flex-wrap: wrap;
     padding-top: 4px;
+  }
+
+  .fix-row {
+    justify-content: space-between;
+  }
+
+  .warning-button {
+    border-color: #c77d41;
+    background: #c77d41;
   }
 
   .button {

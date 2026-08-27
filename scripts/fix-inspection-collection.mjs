@@ -60,7 +60,7 @@ const fieldConfigs = [
   { name: 'checkout_approval_name', type: 'text', required: false },
   { name: 'checkout_approval_date', type: 'date', required: false },
   { name: 'checkout_notes', type: 'text', required: false },
-  { name: 'workflow_status', type: 'select', required: false, values: ['draft', 'admin-complete', 'tenant-reviewed', 'admin-approved', 'checkout-approved'], maxSelect: 1, minSelect: 0 },
+  { name: 'workflow_status', type: 'select', required: false, values: ['draft', 'admin-complete', 'tenant-reviewed', 'repair-needed', 'admin-approved', 'checkout-approved'], maxSelect: 1, minSelect: 0 },
   { name: 'checklist', type: 'json', required: false },
   { name: 'tenant_approved', type: 'bool', required: false },
   { name: 'created_by', type: 'relation', required: false, maxSelect: 1, minSelect: 0, collectionId: '_pb_users_auth_', cascadeDelete: false }

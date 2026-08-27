@@ -1,7 +1,54 @@
-export type InspectionWorkflowStatus = 'draft' | 'admin-complete' | 'tenant-reviewed' | 'admin-approved' | 'checkout-approved';
+export type InspectionWorkflowStatus = 'draft' | 'admin-complete' | 'tenant-reviewed' | 'repair-needed' | 'admin-approved' | 'checkout-approved';
+
+export const repairRequiredAdminNote = 'Damage must be addressed before deposit release.';
+
+export function getInspectionStageMeta(status?: InspectionWorkflowStatus | null) {
+  const stageMap: Record<InspectionWorkflowStatus, { label: string; description: string; nextAction: string }> = {
+    draft: {
+      label: 'Draft',
+      description: 'Start the inspection and record the tenant, property, and condition notes.',
+      nextAction: 'Complete the checklist and move to the admin review stage.'
+    },
+    'admin-complete': {
+      label: 'Admin inspection complete',
+      description: 'The admin has finished the inspection and signed the report.',
+      nextAction: 'Send the inspection to the tenant for review and signature.'
+    },
+    'tenant-reviewed': {
+      label: 'Tenant reviewed and signed',
+      description: 'The tenant has reviewed the report and added any notes or response.',
+      nextAction: 'Check for final issues and approve or flag anything that still needs repair.'
+    },
+    'repair-needed': {
+      label: 'Fix required',
+      description: repairRequiredAdminNote,
+      nextAction: 'Resolve the item(s), then re-submit the inspection for final review.'
+    },
+    'admin-approved': {
+      label: 'Admin approved',
+      description: 'The inspection is acceptable after review and any required fixes have been addressed.',
+      nextAction: 'Move to the checkout approval stage to finalize the deposit decision.'
+    },
+    'checkout-approved': {
+      label: 'Checkout approved',
+      description: 'The final checkout review is complete and the deposit process can proceed.',
+      nextAction: 'The case is closed and the deposit can be released or adjusted.'
+    }
+  };
+
+  return stageMap[status ?? 'draft'];
+}
 
 export function canEditInspectionStatus(status?: InspectionWorkflowStatus | null) {
-  return status === 'draft' || status === 'admin-complete' || status === 'tenant-reviewed';
+  return status === 'draft' || status === 'admin-complete' || status === 'tenant-reviewed' || status === 'repair-needed';
+}
+
+export function canReopenInspectionForRepair(status?: InspectionWorkflowStatus | null) {
+  return status === 'admin-approved' || status === 'checkout-approved';
+}
+
+export function reopenInspectionForRepairStatus(status?: InspectionWorkflowStatus | null): InspectionWorkflowStatus {
+  return canReopenInspectionForRepair(status) ? 'repair-needed' : (status ?? 'draft');
 }
 
 export function isAutoCancelError(error: unknown): boolean {
@@ -13,15 +60,56 @@ export function isAutoCancelError(error: unknown): boolean {
 }
 
 export function isMissingResourceError(error: unknown): boolean {
-  if (!error || typeof error !== 'object') return false;
+  if (!error) return false;
 
   const record = error as { status?: number; name?: string; message?: string };
+  const status = typeof record?.status === 'number' ? record.status : undefined;
+  const name = typeof record?.name === 'string' ? record.name : error instanceof Error ? error.name : '';
+  const message = typeof record?.message === 'string' ? record.message.toLowerCase() : error instanceof Error ? error.message.toLowerCase() : '';
+
   return (
-    record.status === 404 ||
-    record.name === 'ClientResponseError' && record.status === 404 ||
-    typeof record.message === 'string' && record.message.toLowerCase().includes('wasn\'t found') ||
-    typeof record.message === 'string' && record.message.toLowerCase().includes('not found')
+    status === 404 ||
+    name === 'ClientResponseError' && status === 404 ||
+    message.includes('wasn\'t found') ||
+    message.includes('not found') ||
+    message.includes('404')
   );
+}
+
+export function validateInspectionSignatureRequirements({
+  currentStatus,
+  adminSignature,
+  adminSignatureDate,
+  tenantApproved,
+  tenantSignature,
+  tenantSignDate
+}: {
+  currentStatus?: InspectionWorkflowStatus | null;
+  adminSignature: string;
+  adminSignatureDate: string;
+  tenantApproved: boolean;
+  tenantSignature: string;
+  tenantSignDate: string;
+}): { isValid: boolean; message: string } {
+  const isDraft = currentStatus === 'draft';
+
+  if (isDraft && !adminSignature.trim()) {
+    return { isValid: false, message: 'Admin signature is required before saving a draft inspection. Please add the admin signature.' };
+  }
+
+  if (isDraft && !adminSignatureDate.trim()) {
+    return { isValid: false, message: 'Admin signature date is required before saving a draft inspection. Please add the admin signature date.' };
+  }
+
+  if (tenantApproved && !tenantSignature.trim()) {
+    return { isValid: false, message: 'Tenant signature is required when the tenant approves the inspection. Please add the tenant signature.' };
+  }
+
+  if (tenantApproved && !tenantSignDate.trim()) {
+    return { isValid: false, message: 'Tenant signature date is required when the tenant approves the inspection. Please add the tenant signature date.' };
+  }
+
+  return { isValid: true, message: '' };
 }
 
 export function deriveNextWorkflowStatus({
@@ -42,4 +130,50 @@ export function deriveNextWorkflowStatus({
   }
 
   return currentStatus ?? 'draft';
+}
+
+export function buildInspectionRecordDetailEntries(record: {
+  provider_name?: string | null;
+  created_by?: string | null;
+  expand?: {
+    provider?: { name?: string | null } | null;
+    created_by?: { name?: string | null } | null;
+  } | null;
+  admin_approval_name?: string | null;
+  checkout_approval_name?: string | null;
+}): Array<{ label: string; value: string }> {
+  const providerValue = record.provider_name || record.expand?.provider?.name || '—';
+  const createdByValue = record.created_by || record.expand?.created_by?.name || '—';
+
+  return [
+    { label: 'Provider', value: providerValue },
+    { label: 'Created by', value: createdByValue },
+    { label: 'Admin approval', value: record.admin_approval_name || '—' },
+    { label: 'Checkout approval', value: record.checkout_approval_name || '—' }
+  ];
+}
+
+export function buildMoveOutPrefillFromMoveIn(record: {
+  tenant?: string | null;
+  tenants?: string | null;
+  property_address?: string | null;
+  unit_no?: string | null;
+  tenant_name_1?: string | null;
+  tenant_name_2?: string | null;
+}): {
+  tenantId: string;
+  tenantName: string;
+  propertyAddress: string;
+  unitNo: string;
+  tenantName1: string;
+  tenantName2: string;
+} {
+  return {
+    tenantId: record.tenant ?? '',
+    tenantName: record.tenants ?? '',
+    propertyAddress: record.property_address ?? '',
+    unitNo: record.unit_no ?? '',
+    tenantName1: record.tenant_name_1 ?? '',
+    tenantName2: record.tenant_name_2 ?? ''
+  };
 }
