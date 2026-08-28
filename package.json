@@ -38,6 +38,7 @@
 	},
 	"dependencies": {
 		"@lucide/svelte": "^1.33.0",
+		"jspdf": "^4.2.1",
 		"pocketbase": "^0.28.0"
 	}
 }

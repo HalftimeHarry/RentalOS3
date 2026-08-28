@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildInspectionRecordDetailEntries, buildMoveOutPrefillFromMoveIn, canEditInspectionStatus, canReopenInspectionForRepair, deriveNextWorkflowStatus, getInspectionStageMeta, isAutoCancelError, isMissingResourceError, reopenInspectionForRepairStatus, validateInspectionSignatureRequirements } from '$lib/inspection/inspectionWorkflow';
+import { buildInspectionRecordDetailEntries, buildMoveOutPrefillFromMoveIn, canEditInspectionStatus, canReopenInspectionForRepair, deriveNextWorkflowStatus, getInspectionStageMeta, isAutoCancelError, isInspectionRecordStale, isMissingResourceError, reopenInspectionForRepairStatus, resolveInspectionOwnerFields, validateInspectionSignatureRequirements } from '$lib/inspection/inspectionWorkflow';
 
 function createItemState() {
   return { na: false, o: false, desc: '' };
@@ -112,34 +112,29 @@ describe('inspection workflow rules', () => {
     });
   });
 
-  it('prefills a move-out inspection from the latest move-in record', () => {
+  it('prefills a move-out inspection from the latest move-in record without extra tenant signature fields', () => {
     expect(buildMoveOutPrefillFromMoveIn({
       tenant: 'tenant-42',
       tenants: 'Alice & Bob Smith',
       property_address: '123 Main St',
-      unit_no: 'A1',
-      tenant_name_1: 'Alice Smith',
-      tenant_name_2: 'Bob Smith'
+      unit_no: 'A1'
     })).toEqual({
       tenantId: 'tenant-42',
       tenantName: 'Alice & Bob Smith',
       propertyAddress: '123 Main St',
-      unitNo: 'A1',
-      tenantName1: 'Alice Smith',
-      tenantName2: 'Bob Smith'
+      unitNo: 'A1'
     });
   });
 
-  it('includes all core record detail fields with fallback placeholders', () => {
+  it('keeps only the admin-created record detail and fallback values that remain relevant', () => {
     expect(buildInspectionRecordDetailEntries({
-      provider_name: 'Dustin Dinsmore',
-      admin_approval_name: 'Dustin Dinsmore',
-      checkout_approval_name: 'Dustin Dinsmore'
+      created_by: 'Dustin Dinsmore'
     })).toEqual([
-      { label: 'Provider', value: 'Dustin Dinsmore' },
-      { label: 'Created by', value: '—' },
-      { label: 'Admin approval', value: 'Dustin Dinsmore' },
-      { label: 'Checkout approval', value: 'Dustin Dinsmore' }
+      { label: 'Created by', value: 'Dustin Dinsmore' }
+    ]);
+
+    expect(buildInspectionRecordDetailEntries({})).toEqual([
+      { label: 'Created by', value: '—' }
     ]);
   });
 
@@ -158,32 +153,60 @@ describe('inspection workflow rules', () => {
     expect(isMissingResourceError(new Error('network error'))).toBe(false);
   });
 
-  it('requires the admin signature and date before a draft can be saved, and the tenant signature/date when tenant approval is given', () => {
+  it('keeps the admin provider relation but uses the active tenant as the creator when a renter signs the inspection', () => {
+    expect(resolveInspectionOwnerFields({
+      authUserId: 'user-123',
+      authUserName: 'Alice Smith',
+      fallbackProviderName: 'Dustin Dinsmore',
+      adminProviderId: '0vkp0699sqhkv90',
+      isAdmin: false
+    })).toEqual({
+      providerId: '0vkp0699sqhkv90',
+      providerName: 'Alice Smith',
+      createdById: 'user-123'
+    });
+
+    expect(resolveInspectionOwnerFields({
+      authUserId: '',
+      authUserName: 'Dustin Dinsmore',
+      fallbackProviderName: 'Dustin Dinsmore',
+      adminProviderId: '0vkp0699sqhkv90',
+      isAdmin: true
+    })).toEqual({
+      providerId: '0vkp0699sqhkv90',
+      providerName: 'Dustin Dinsmore',
+      createdById: null
+    });
+  });
+
+  it('marks an inspection stale only after the 30-day grace period and never by created date alone', () => {
+    const now = Date.now();
+    const recentDate = new Date(now - 10 * 24 * 60 * 60 * 1000).toISOString();
+    const staleDate = new Date(now - 31 * 24 * 60 * 60 * 1000).toISOString();
+
+    expect(isInspectionRecordStale({ updated: recentDate })).toBe(false);
+    expect(isInspectionRecordStale({ created: staleDate })).toBe(true);
+    expect(isInspectionRecordStale({ updated: staleDate })).toBe(true);
+    expect(isInspectionRecordStale({ updated: 'not-a-date' })).toBe(false);
+  });
+
+  it('allows inspection records to save without any digital signature requirements', () => {
     expect(validateInspectionSignatureRequirements({
       currentStatus: 'draft',
       adminSignature: '',
-      adminSignatureDate: '2026-08-27',
+      adminSignatureDate: '',
       tenantApproved: false,
       tenantSignature: '',
       tenantSignDate: ''
-    }).isValid).toBe(false);
+    }).isValid).toBe(true);
 
     expect(validateInspectionSignatureRequirements({
       currentStatus: 'draft',
-      adminSignature: 'Dustin Dinsmore',
-      adminSignatureDate: '2026-08-27',
+      adminSignature: '',
+      adminSignatureDate: '',
       tenantApproved: true,
       tenantSignature: '',
-      tenantSignDate: '2026-08-28'
-    }).isValid).toBe(false);
-
-    expect(validateInspectionSignatureRequirements({
-      currentStatus: 'draft',
-      adminSignature: 'Dustin Dinsmore',
-      adminSignatureDate: '2026-08-27',
-      tenantApproved: true,
-      tenantSignature: 'Alice Smith',
-      tenantSignDate: '2026-08-28'
+      tenantSignDate: ''
     }).isValid).toBe(true);
   });
 });

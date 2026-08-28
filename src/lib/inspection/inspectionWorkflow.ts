@@ -11,11 +11,11 @@ export function getInspectionStageMeta(status?: InspectionWorkflowStatus | null)
     },
     'admin-complete': {
       label: 'Admin inspection complete',
-      description: 'The admin has finished the inspection and signed the report.',
-      nextAction: 'Send the inspection to the tenant for review and signature.'
+      description: 'The admin has finished the inspection and documented the report.',
+      nextAction: 'Send the inspection to the tenant for review and confirmation.'
     },
     'tenant-reviewed': {
-      label: 'Tenant reviewed and signed',
+      label: 'Tenant reviewed',
       description: 'The tenant has reviewed the report and added any notes or response.',
       nextAction: 'Check for final issues and approve or flag anything that still needs repair.'
     },
@@ -76,6 +76,44 @@ export function isMissingResourceError(error: unknown): boolean {
   );
 }
 
+export function resolveInspectionOwnerFields({
+  authUserId,
+  authUserName,
+  fallbackProviderName,
+  adminProviderId,
+  isAdmin = false
+}: {
+  authUserId?: string | null;
+  authUserName?: string | null;
+  fallbackProviderName?: string | null;
+  adminProviderId?: string | null;
+  isAdmin?: boolean;
+}): { providerId: string | null; providerName: string; createdById: string | null } {
+  const safeAuthUserId = authUserId?.trim() ? authUserId : null;
+  const safeAuthUserName = authUserName?.trim() || fallbackProviderName?.trim() || 'Dustin Dinsmore';
+  const providerId = isAdmin ? (safeAuthUserId ?? adminProviderId ?? null) : (adminProviderId ?? safeAuthUserId ?? null);
+
+  return {
+    providerId: providerId ?? null,
+    providerName: safeAuthUserName,
+    createdById: safeAuthUserId ?? null
+  };
+}
+
+export function isInspectionRecordStale(record?: { created?: string | null; updated?: string | null; updatedAt?: string | null; lastUpdatedAt?: string | null } | null, options?: { graceDays?: number; now?: Date }) {
+  const graceDays = options?.graceDays ?? 30;
+  const now = options?.now ?? new Date();
+  const thresholdMs = graceDays * 24 * 60 * 60 * 1000;
+  const rawTimestamp = record?.updated ?? record?.updatedAt ?? record?.lastUpdatedAt ?? record?.created;
+
+  if (!rawTimestamp) return false;
+
+  const timestamp = new Date(rawTimestamp);
+  if (Number.isNaN(timestamp.getTime())) return false;
+
+  return now.getTime() - timestamp.getTime() > thresholdMs;
+}
+
 export function validateInspectionSignatureRequirements({
   currentStatus,
   adminSignature,
@@ -85,30 +123,12 @@ export function validateInspectionSignatureRequirements({
   tenantSignDate
 }: {
   currentStatus?: InspectionWorkflowStatus | null;
-  adminSignature: string;
-  adminSignatureDate: string;
-  tenantApproved: boolean;
-  tenantSignature: string;
-  tenantSignDate: string;
+  adminSignature?: string;
+  adminSignatureDate?: string;
+  tenantApproved?: boolean;
+  tenantSignature?: string;
+  tenantSignDate?: string;
 }): { isValid: boolean; message: string } {
-  const isDraft = currentStatus === 'draft';
-
-  if (isDraft && !adminSignature.trim()) {
-    return { isValid: false, message: 'Admin signature is required before saving a draft inspection. Please add the admin signature.' };
-  }
-
-  if (isDraft && !adminSignatureDate.trim()) {
-    return { isValid: false, message: 'Admin signature date is required before saving a draft inspection. Please add the admin signature date.' };
-  }
-
-  if (tenantApproved && !tenantSignature.trim()) {
-    return { isValid: false, message: 'Tenant signature is required when the tenant approves the inspection. Please add the tenant signature.' };
-  }
-
-  if (tenantApproved && !tenantSignDate.trim()) {
-    return { isValid: false, message: 'Tenant signature date is required when the tenant approves the inspection. Please add the tenant signature date.' };
-  }
-
   return { isValid: true, message: '' };
 }
 
@@ -118,14 +138,14 @@ export function deriveNextWorkflowStatus({
   hasTenantChanges
 }: {
   currentStatus?: InspectionWorkflowStatus | null;
-  tenantApproved: boolean;
-  hasTenantChanges: boolean;
+  tenantApproved?: boolean;
+  hasTenantChanges?: boolean;
 }): InspectionWorkflowStatus {
-  if ((currentStatus === 'draft' || currentStatus === 'admin-complete') && tenantApproved) {
+  if ((currentStatus === 'draft' || currentStatus === 'admin-complete') && Boolean(tenantApproved)) {
     return 'tenant-reviewed';
   }
 
-  if (currentStatus === 'draft' && !tenantApproved && hasTenantChanges) {
+  if (currentStatus === 'draft' && !tenantApproved && Boolean(hasTenantChanges)) {
     return 'draft';
   }
 
@@ -133,23 +153,16 @@ export function deriveNextWorkflowStatus({
 }
 
 export function buildInspectionRecordDetailEntries(record: {
-  provider_name?: string | null;
   created_by?: string | null;
+  created_by_name?: string | null;
   expand?: {
-    provider?: { name?: string | null } | null;
     created_by?: { name?: string | null } | null;
   } | null;
-  admin_approval_name?: string | null;
-  checkout_approval_name?: string | null;
 }): Array<{ label: string; value: string }> {
-  const providerValue = record.provider_name || record.expand?.provider?.name || '—';
-  const createdByValue = record.created_by || record.expand?.created_by?.name || '—';
+  const createdByValue = record.created_by_name || record.expand?.created_by?.name || record.created_by || '—';
 
   return [
-    { label: 'Provider', value: providerValue },
-    { label: 'Created by', value: createdByValue },
-    { label: 'Admin approval', value: record.admin_approval_name || '—' },
-    { label: 'Checkout approval', value: record.checkout_approval_name || '—' }
+    { label: 'Created by', value: createdByValue }
   ];
 }
 
@@ -165,15 +178,15 @@ export function buildMoveOutPrefillFromMoveIn(record: {
   tenantName: string;
   propertyAddress: string;
   unitNo: string;
-  tenantName1: string;
-  tenantName2: string;
+  tenantName1?: string;
+  tenantName2?: string;
 } {
   return {
     tenantId: record.tenant ?? '',
     tenantName: record.tenants ?? '',
     propertyAddress: record.property_address ?? '',
     unitNo: record.unit_no ?? '',
-    tenantName1: record.tenant_name_1 ?? '',
-    tenantName2: record.tenant_name_2 ?? ''
+    tenantName1: record.tenant_name_1 ?? undefined,
+    tenantName2: record.tenant_name_2 ?? undefined
   };
 }

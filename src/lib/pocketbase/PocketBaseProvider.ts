@@ -6,6 +6,10 @@ export class PocketBaseProvider {
 
   constructor(url = env.PUBLIC_POCKETBASE_URL || 'http://127.0.0.1:8090') {
     this.client = new PocketBase(url);
+
+    if (typeof document !== 'undefined') {
+      this.client.authStore.loadFromCookie(document.cookie);
+    }
   }
 }
 

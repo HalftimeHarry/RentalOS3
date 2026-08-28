@@ -59,6 +59,9 @@
 		if (!browser || !hydrated) return;
 		if (isLoggedIn && isPublicRoute && pathname !== '/dashboard') goto('/dashboard');
 		if (!isLoggedIn && !isPublicRoute && pathname !== '/login') goto('/login');
+		if (isLoggedIn && pathname === '/dashboard') {
+			console.debug('[layout] dashboard route is visible for logged-in user');
+		}
 	});
 
 	function logout() {
@@ -139,6 +142,18 @@
 	.back-to-top:focus-visible {
 		transform: translateY(-2px);
 		outline: none;
+	}
+
+	@media print {
+		:global(body),
+		:global(html) {
+			background: white !important;
+		}
+
+		.sidebar,
+		.back-to-top {
+			display: none !important;
+		}
 	}
 
 	@media (max-width: 720px) {

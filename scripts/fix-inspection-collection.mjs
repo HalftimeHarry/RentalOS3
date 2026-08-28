@@ -44,25 +44,9 @@ const fieldConfigs = [
   { name: 'move_out_date', type: 'date', required: false },
   { name: 'other_condition_summary', type: 'bool', required: false },
   { name: 'notes', type: 'text', required: false },
-  { name: 'tenant_name_1', type: 'text', required: false },
-  { name: 'tenant_name_2', type: 'text', required: false },
-  { name: 'provider', type: 'relation', required: false, maxSelect: 1, minSelect: 0, collectionId: '_pb_users_auth_', cascadeDelete: false },
-  { name: 'provider_name', type: 'text', required: false },
-  { name: 'provider_date', type: 'date', required: false },
-  { name: 'tenant_date_1', type: 'date', required: false },
-  { name: 'tenant_date_2', type: 'date', required: false },
-  { name: 'admin_signature', type: 'text', required: false },
-  { name: 'admin_signature_date', type: 'date', required: false },
-  { name: 'tenant_signature', type: 'text', required: false },
-  { name: 'tenant_sign_date', type: 'date', required: false },
-  { name: 'admin_approval_name', type: 'text', required: false },
-  { name: 'admin_approval_date', type: 'date', required: false },
-  { name: 'checkout_approval_name', type: 'text', required: false },
-  { name: 'checkout_approval_date', type: 'date', required: false },
   { name: 'checkout_notes', type: 'text', required: false },
   { name: 'workflow_status', type: 'select', required: false, values: ['draft', 'admin-complete', 'tenant-reviewed', 'repair-needed', 'admin-approved', 'checkout-approved'], maxSelect: 1, minSelect: 0 },
   { name: 'checklist', type: 'json', required: false },
-  { name: 'tenant_approved', type: 'bool', required: false },
   { name: 'created_by', type: 'relation', required: false, maxSelect: 1, minSelect: 0, collectionId: '_pb_users_auth_', cascadeDelete: false }
 ];
 
@@ -81,7 +65,7 @@ const main = async () => {
     if (field.name === 'tenant') {
       return { ...field, collectionId: tenantsCollection?.id ?? '_pb_users_auth_' };
     }
-    if (field.name === 'provider' || field.name === 'created_by') {
+    if (field.name === 'created_by') {
       return { ...field, collectionId: '_pb_users_auth_' };
     }
     return field;
@@ -91,10 +75,10 @@ const main = async () => {
     name: 'inspections',
     type: 'base',
     system: false,
-    listRule: '@request.auth.id != ""',
-    viewRule: '@request.auth.id != ""',
-    createRule: '@request.auth.id != ""',
-    updateRule: '@request.auth.role = "admin" || (@request.auth.id != "" && @request.auth.id = created_by)',
+    listRule: '@request.auth.role = "admin"',
+    viewRule: '@request.auth.role = "admin"',
+    createRule: '@request.auth.role = "admin"',
+    updateRule: '@request.auth.role = "admin"',
     deleteRule: '@request.auth.role = "admin"',
     fields: normalizedFields
   };
@@ -111,10 +95,10 @@ const main = async () => {
       name: 'inspections',
       type: 'base',
       system: false,
-      listRule: '@request.auth.id != ""',
-      viewRule: '@request.auth.id != ""',
-      createRule: '@request.auth.id != ""',
-      updateRule: '@request.auth.role = "admin" || (@request.auth.id != "" && @request.auth.id = created_by)',
+      listRule: '@request.auth.role = "admin"',
+      viewRule: '@request.auth.role = "admin"',
+      createRule: '@request.auth.role = "admin"',
+      updateRule: '@request.auth.role = "admin"',
       deleteRule: '@request.auth.role = "admin"',
       fields: normalizedFields
     });

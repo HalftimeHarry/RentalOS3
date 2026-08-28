@@ -7,6 +7,7 @@
   import { rentalService } from '$lib/services/RentalService';
   import { renterService } from '$lib/services/RenterService';
   import { formatDateForInput, normalizeDateOnly, parseDateOnly, renderDateLabel } from '$lib/models';
+  import { getDashboardGreeting } from '$lib/dashboard/greeting';
   import type { Bill, BillStatus, Rental } from '$lib/models';
 
   type TenantDocumentField = 'creditData' | 'appData' | 'damageData';
@@ -150,17 +151,14 @@
     }
   };
   const getGreeting = () => {
-    const now = new Date();
-    const hour = now.getHours();
-    const day = now.toLocaleDateString('en-US', { weekday: 'long' });
-    dayLabel = `${day}, your rental at a glance`;
-
-    if (hour < 12) greeting = 'Good morning.';
-    else if (hour < 18) greeting = 'Good afternoon.';
-    else greeting = 'Good evening.';
+    const result = getDashboardGreeting(new Date());
+    dayLabel = result.dayLabel;
+    greeting = result.greeting;
   };
 
-  getGreeting();
+  onMount(() => {
+    getGreeting();
+  });
 
   $effect(() => {
     if (data.rental) rental = data.rental as Rental | null;

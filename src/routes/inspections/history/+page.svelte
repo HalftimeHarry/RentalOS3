@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { jsPDF } from 'jspdf';
   import { buildInspectionRecordDetailEntries, isAutoCancelError } from '$lib/inspection/inspectionWorkflow';
   import { pocketbase } from '$lib/pocketbase/PocketBaseProvider';
 
@@ -16,25 +17,10 @@
     created?: string;
     checklist?: string | Record<string, unknown>;
     notes?: string;
-    provider?: string;
-    provider_name?: string;
-    provider_date?: string;
-    tenant_name_1?: string;
-    tenant_name_2?: string;
-    tenant_date_1?: string;
-    tenant_date_2?: string;
-    admin_approval_name?: string;
-    admin_approval_date?: string;
-    checkout_approval_name?: string;
-    checkout_approval_date?: string;
     checkout_notes?: string;
     created_by?: string;
+    created_by_name?: string;
     expand?: {
-      provider?: {
-        id?: string;
-        name?: string;
-        email?: string;
-      };
       created_by?: {
         id?: string;
         name?: string;
@@ -42,6 +28,18 @@
       };
     };
   };
+
+  const checklistTemplateSections = [
+    { title: '1. GENERAL CONDITION', items: ['Paint', 'Cleaning / Professional Clean', 'Flooring / Baseboards', 'Walls / Ceilings', 'Doors / Locks / Hardware', 'Windows / Screens / Blinds', 'Lighting', 'Other'] },
+    { title: '2. LIVING ROOM', items: ['Doors / Knobs / Locks / Hinges', 'Flooring / Baseboards', 'Walls / Ceilings / Paint', 'Windows / Screens / Blinds', 'Light Fixtures / Fans', 'Switches / Outlets', 'Other'] },
+    { title: '3. DINING AREA', items: ['Flooring / Baseboards', 'Walls / Ceilings / Paint', 'Windows / Screens / Blinds', 'Light Fixtures / Fans', 'Switches / Outlets', 'Other'] },
+    { title: '4. KITCHEN', items: ['Flooring / Baseboards', 'Walls / Ceiling / Paint', 'Windows / Screens / Blinds', 'Light Fixtures', 'Switches / Outlets', 'Range / Fan / Hood / Knobs', 'Oven / Knobs', 'Microwave', 'Refrigerator', 'Dishwasher', 'Sink / Disposal', 'Faucets / Plumbing', 'Cabinets / Counters / Hardware', 'Other'] },
+    { title: '5. BEDROOM', items: ['Doors / Knobs / Locks / Hinges', 'Flooring / Baseboards', 'Walls / Ceilings / Paint', 'Windows / Screens / Blinds', 'Light Fixtures / Fans', 'Switches / Outlets', 'Closet / Closet Doors / Tracks', 'Smoke / CO detector', 'Other'] },
+    { title: '6. BATHROOM', items: ['Doors / Knobs / Locks / Hinges', 'Flooring / Baseboards', 'Walls / Ceilings / Paint', 'Lights / Switches / Outlets', 'Toilet / Tub / Shower', 'Shower Door / Rail / Curtain', 'Sink / Faucet / Drains', 'Exhaust Fan / Cover', 'Towel / TP Rack(s)', 'Cabinets / Counters', 'Mirror / Medicine Cabinet', 'Other'] },
+    { title: '7. SMALL HALLWAY', items: ['Flooring / Baseboards', 'Walls / Ceilings / Paint', 'Light Fixtures', 'Switches / Outlets', 'Closet / Storage', 'Other'] },
+    { title: '8. SYSTEMS / SAFETY / SECURITY', items: ['Thermostat / HVAC', 'Water Heater', 'Smoke / CO Detectors', 'Doorbell / Security Device', 'Electrical / Outlets / Switches', 'Locks / Access', 'Other'] },
+    { title: '9. INCLUDED ITEMS / FINAL NOTES', items: ['Included items / missing items', 'Damage to report', 'Additional notes', 'Tenant acknowledgement'] }
+  ];
 
   let inspections = $state<InspectionRecord[]>([]);
   let loading = $state(true);
@@ -90,12 +88,34 @@
     return value.name || '—';
   };
 
-  const getProviderName = (record: InspectionRecord) => {
-    return record.provider_name || getExpandedName(record.expand?.provider?.name) || record.provider || '—';
+  const getCreatedByName = (record: InspectionRecord) => {
+    return record.created_by_name || getExpandedName(record.expand?.created_by?.name) || record.created_by || '—';
   };
 
-  const getCreatedByName = (record: InspectionRecord) => {
-    return getExpandedName(record.expand?.created_by?.name) || record.created_by || '—';
+  const formatPdfDate = (value?: string) => {
+    if (!value) return '—';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(date);
+  };
+
+  const openPdfPreview = (doc: jsPDF, fileName: string) => {
+    const pdfBlob = doc.output('blob');
+    const url = URL.createObjectURL(pdfBlob);
+    const previewWindow = window.open(url, '_blank', 'noopener,noreferrer');
+    if (previewWindow) {
+      previewWindow.focus();
+    }
+
+    const anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = fileName;
+    anchor.style.display = 'none';
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+
+    setTimeout(() => URL.revokeObjectURL(url), 30000);
   };
 
   const canEditInspection = (record?: InspectionRecord | null) => {
@@ -111,12 +131,175 @@
     selectedInspection = null;
   };
 
+  const printInspection = (event?: MouseEvent) => {
+    event?.stopPropagation();
+    if (!selectedInspection) return;
+
+    const doc = new jsPDF({ unit: 'pt', format: 'letter' });
+    const pageWidth = doc.internal.pageSize.getWidth();
+    const margin = 52;
+    let y = 52;
+
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(20);
+    doc.text('Inspection Contract', margin, y);
+    y += 24;
+
+    doc.setFont('helvetica', 'normal');
+    doc.setFontSize(10);
+
+    const details = [
+      `Address: ${selectedInspection.property_address || 'Not provided'}`,
+      `Unit: ${selectedInspection.unit_no || 'Not provided'}`,
+      `Tenant(s): ${selectedInspection.tenants || 'Not provided'}`,
+      `Type: ${selectedInspection.type === 'move-out' ? 'Move-out' : 'Move-in'}`,
+      `Move-in date: ${formatPdfDate(selectedInspection.move_in_date)}`,
+      `Move-out date: ${formatPdfDate(selectedInspection.move_out_date)}`,
+      `Workflow stage: ${workflowLabel(selectedInspection.workflow_status)}`,
+      `Created by: ${getCreatedByName(selectedInspection)}`
+    ];
+
+    for (const line of details) {
+      doc.text(line, margin, y);
+      y += 16;
+    }
+
+    y += 8;
+    doc.setFont('helvetica', 'bold');
+    doc.text('Checklist review', margin, y);
+    y += 18;
+    doc.setFont('helvetica', 'normal');
+
+    const checklistData = parseChecklist(selectedInspection.checklist);
+
+    for (const section of checklistTemplateSections) {
+      if (y > 700) {
+        doc.addPage();
+        y = 56;
+      }
+
+      doc.setFont('helvetica', 'bold');
+      doc.text(section.title, margin, y);
+      y += 14;
+      doc.setFont('helvetica', 'normal');
+
+      for (const item of section.items) {
+        const itemState = checklistData[section.title]?.[item] ?? {} as { na?: boolean; o?: boolean; desc?: string };
+        const flags: string[] = [];
+        if (itemState.na) flags.push('N/A');
+        if (itemState.o) flags.push('O');
+        if (itemState.desc?.trim()) flags.push(itemState.desc.trim());
+        const itemText = `${item}${flags.length ? ` ${flags.join(' — ')}` : ''}`;
+        const wrapped = doc.splitTextToSize(`• ${itemText}`, pageWidth - margin * 2 - 120);
+
+        for (const chunk of wrapped) {
+          if (y > 760) {
+            doc.addPage();
+            y = 56;
+          }
+          doc.text(chunk, margin, y);
+          y += 12;
+        }
+      }
+
+      y += 8;
+    }
+
+    const notesText = [selectedInspection.notes, selectedInspection.checkout_notes].filter(Boolean).join('\n\n');
+
+    if (y > 680) {
+      doc.addPage();
+      y = 56;
+    }
+
+    doc.setFont('helvetica', 'bold');
+    doc.text('9. INCLUDED ITEMS / FINAL NOTES', margin, y);
+    y += 20;
+
+    if (notesText) {
+      doc.setFont('helvetica', 'normal');
+      const notesLines = doc.splitTextToSize(notesText, pageWidth - margin * 2);
+      for (const line of notesLines) {
+        if (y > 760) {
+          doc.addPage();
+          y = 56;
+        }
+        doc.text(line, margin, y);
+        y += 12;
+      }
+    }
+
+    if (y > 610) {
+      doc.addPage();
+      y = 56;
+    }
+
+    doc.setDrawColor(190, 200, 190);
+    doc.setLineWidth(0.7);
+    const footerY = Math.max(y + 18, 640);
+    const fieldWidth = (pageWidth - margin * 2 - 24) / 2;
+
+    const drawMoveSignatureBlock = (title: string, x: number, yPos: number, width: number) => {
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(9);
+      doc.text(title, x, yPos);
+
+      const boxY = yPos + 10;
+
+      doc.setFont('helvetica', 'bold');
+      doc.text('Manager', x + 12, boxY + 16);
+      doc.setFont('helvetica', 'normal');
+      doc.text('Signature', x + 92, boxY + 16);
+      doc.line(x + 160, boxY + 12, x + width - 110, boxY + 12);
+      doc.text('Date', x + width - 105, boxY + 16);
+      doc.line(x + width - 70, boxY + 12, x + width - 12, boxY + 12);
+
+      const tenantRowY = boxY + 44;
+
+      doc.setFont('helvetica', 'bold');
+      doc.text('Tenant', x + 12, tenantRowY + 16);
+      doc.setFont('helvetica', 'normal');
+      doc.text('Signature', x + 92, tenantRowY + 16);
+      doc.line(x + 160, tenantRowY + 12, x + width - 110, tenantRowY + 12);
+      doc.text('Date', x + width - 105, tenantRowY + 16);
+      doc.line(x + width - 70, tenantRowY + 12, x + width - 12, tenantRowY + 12);
+    };
+
+    const moveInFooterY = footerY + 18;
+    const moveOutFooterY = footerY + 110;
+
+    drawMoveSignatureBlock('Move-in', margin, moveInFooterY, pageWidth - margin * 2);
+    drawMoveSignatureBlock('Move-out', margin, moveOutFooterY, pageWidth - margin * 2);
+
+    const fileName = `${(selectedInspection.tenants || 'inspection').replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-inspection-contract.pdf`;
+    openPdfPreview(doc, fileName);
+  };
+
   onMount(async () => {
     try {
       const records = await pocketbase.client.collection('inspections').getFullList({
-        fields: 'id,type,property_address,unit_no,tenant,tenants,move_in_date,move_out_date,notes,provider,provider_name,provider_date,tenant_name_1,tenant_name_2,tenant_date_1,tenant_date_2,admin_approval_name,admin_approval_date,checkout_approval_name,checkout_approval_date,checkout_notes,workflow_status,checklist,created,created_by'
+        expand: 'created_by',
+        fields: 'id,type,property_address,unit_no,tenant,tenants,move_in_date,move_out_date,notes,checkout_notes,workflow_status,checklist,created,created_by'
       });
-      inspections = records as InspectionRecord[];
+
+      const userIds = [...new Set(records.map((record) => record.created_by).filter((value): value is string => Boolean(value)))];
+      const userNameLookup = new Map<string, string>();
+
+      for (const userId of userIds) {
+        try {
+          const user = await pocketbase.client.collection('users').getOne(userId, { fields: 'id,name' });
+          if (user?.name) {
+            userNameLookup.set(userId, user.name);
+          }
+        } catch {
+          // Ignore lookup failures and keep the raw id as a fallback.
+        }
+      }
+
+      inspections = records.map((record) => ({
+        ...record,
+        created_by_name: record.expand?.created_by?.name || userNameLookup.get(record.created_by ?? '') || record.created_by || '—'
+      })) as InspectionRecord[];
     } catch (loadError) {
       if (isAutoCancelError(loadError)) return;
       console.error('[inspection history] load failed:', loadError);
@@ -158,7 +341,7 @@
             <th>Property</th>
             <th>Type</th>
             <th>Date</th>
-            <th>Provider</th>
+            <th>Created by</th>
             <th>Stage</th>
             <th>Notes</th>
           </tr>
@@ -183,7 +366,7 @@
               <td>
                 {record.type === 'move-out' ? prettyDate(record.move_out_date) : prettyDate(record.move_in_date)}
               </td>
-              <td>{getProviderName(record)}</td>
+              <td>{getCreatedByName(record)}</td>
               <td>
                 <span class="stage-tag">{workflowLabel(record.workflow_status)}</span>
               </td>
@@ -204,7 +387,10 @@
           <p class="page-kicker">Inspection record</p>
           <h2>{selectedInspection.tenants || 'Tenant record'}</h2>
         </div>
-        <button class="close-button" type="button" aria-label="Close inspection" onclick={closeInspection}>×</button>
+        <div class="modal-header-actions">
+          <button class="print-button" type="button" aria-label="Print inspection record" onclick={(event) => printInspection(event)}>Print</button>
+          <button class="close-button" type="button" aria-label="Close inspection" onclick={closeInspection}>×</button>
+        </div>
       </div>
 
       <div class="detail-grid">
@@ -226,27 +412,12 @@
         </div>
       </div>
 
-      <div class="signature-block">
+      <div class="detail-block">
         <h3>Record details</h3>
         <ul>
           {#each buildInspectionRecordDetailEntries(selectedInspection) as detail}
             <li><strong>{detail.label}:</strong> {detail.value}</li>
           {/each}
-          {#if selectedInspection.tenant_name_1}
-            <li><strong>Tenant 1:</strong> {selectedInspection.tenant_name_1}</li>
-          {/if}
-          {#if selectedInspection.tenant_name_2}
-            <li><strong>Tenant 2:</strong> {selectedInspection.tenant_name_2}</li>
-          {/if}
-          {#if selectedInspection.provider_date}
-            <li><strong>Provider date:</strong> {prettyDate(selectedInspection.provider_date)}</li>
-          {/if}
-          {#if selectedInspection.tenant_date_1}
-            <li><strong>Tenant date 1:</strong> {prettyDate(selectedInspection.tenant_date_1)}</li>
-          {/if}
-          {#if selectedInspection.tenant_date_2}
-            <li><strong>Tenant date 2:</strong> {prettyDate(selectedInspection.tenant_date_2)}</li>
-          {/if}
         </ul>
       </div>
 
@@ -270,16 +441,16 @@
         </span>
       </div>
 
-      {#if selectedInspection.notes && selectedInspection.checkout_notes && selectedInspection.notes !== selectedInspection.checkout_notes}
+      {#if selectedInspection.checkout_notes && selectedInspection.notes !== selectedInspection.checkout_notes}
         <div class="notes-block">
-          <h3>Checkout notes</h3>
+          <h3>Manager notes</h3>
           <p>{selectedInspection.checkout_notes}</p>
         </div>
       {/if}
 
       {#if selectedInspection.notes}
         <div class="notes-block">
-          <h3>Tenant notes</h3>
+          <h3>Inspection notes</h3>
           <p>{selectedInspection.notes}</p>
         </div>
       {/if}
@@ -473,16 +644,32 @@
     color: #183b35;
   }
 
+  .modal-header-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .print-button,
   .close-button {
     border: 1px solid #dfe8df;
     border-radius: 999px;
     background: #f7faf7;
     color: #183b35;
+    cursor: pointer;
+  }
+
+  .print-button {
+    padding: 8px 12px;
+    font-size: 13px;
+    font-weight: 700;
+  }
+
+  .close-button {
     width: 34px;
     height: 34px;
     font-size: 26px;
     line-height: 1;
-    cursor: pointer;
   }
 
   .detail-grid {
@@ -581,6 +768,33 @@
     font-size: 13px;
   }
 
+  .signature-footer {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 14px;
+    margin-top: 22px;
+    padding-top: 14px;
+    border-top: 1px solid #dfe8df;
+  }
+
+  .sig-box {
+    display: grid;
+    gap: 10px;
+    padding: 12px;
+    border: 1px solid #dfe8df;
+    border-radius: 10px;
+    background: white;
+    color: #405b57;
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  .sig-line {
+    border-bottom: 1px solid #aabcb4;
+    min-height: 28px;
+    width: 100%;
+  }
+
   .section-card {
     border: 1px solid #dfe8df;
     border-radius: 10px;
@@ -627,6 +841,49 @@
 
   .desc {
     color: #536864;
+  }
+
+  @media print {
+    body {
+      background: white;
+    }
+
+    aside.sidebar,
+    .page-header,
+    section.panel,
+    .back-to-top,
+    .modal-header-actions,
+    .action-bar,
+    .close-button,
+    .button {
+      display: none !important;
+    }
+
+    .modal-backdrop {
+      position: static;
+      display: block;
+      background: white;
+      padding: 0;
+      width: 100%;
+    }
+
+    .inspection-modal {
+      width: 100%;
+      max-height: none;
+      overflow: visible;
+      border: none;
+      box-shadow: none;
+      padding: 0;
+    }
+
+    .checklist-block {
+      display: none !important;
+    }
+
+    .signature-footer {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      margin-top: 24px;
+    }
   }
 
   @media (max-width: 720px) {
