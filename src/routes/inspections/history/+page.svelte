@@ -164,8 +164,30 @@
       y += 16;
     }
 
-    y += 8;
+    const signatureY = y + 20;
+    const drawHistorySignatureRow = (label: string, y: number) => {
+      doc.setFont('helvetica', 'bold');
+      doc.text(label, margin + 12, y + 10);
+      doc.setFont('helvetica', 'normal');
+      doc.text('Signature', margin + 95, y + 10);
+      doc.line(margin + 170, y + 7, pageWidth - margin - 155, y + 7);
+      doc.text('Date', pageWidth - 190, y + 10);
+      doc.line(pageWidth - 150, y + 7, pageWidth - margin - 12, y + 7);
+    };
+
     doc.setFont('helvetica', 'bold');
+    doc.setFontSize(9);
+    doc.text('Move-in', margin, signatureY);
+    drawHistorySignatureRow('Manager', signatureY + 16);
+    drawHistorySignatureRow('Tenant', signatureY + 46);
+
+    doc.text('Move-out', margin, signatureY + 88);
+    drawHistorySignatureRow('Manager', signatureY + 104);
+    drawHistorySignatureRow('Tenant', signatureY + 134);
+
+    y = signatureY + 180;
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(10);
     doc.text('Checklist review', margin, y);
     y += 18;
     doc.setFont('helvetica', 'normal');
@@ -204,72 +226,6 @@
 
       y += 8;
     }
-
-    const notesText = [selectedInspection.notes, selectedInspection.checkout_notes].filter(Boolean).join('\n\n');
-
-    if (y > 680) {
-      doc.addPage();
-      y = 56;
-    }
-
-    doc.setFont('helvetica', 'bold');
-    doc.text('9. INCLUDED ITEMS / FINAL NOTES', margin, y);
-    y += 20;
-
-    if (notesText) {
-      doc.setFont('helvetica', 'normal');
-      const notesLines = doc.splitTextToSize(notesText, pageWidth - margin * 2);
-      for (const line of notesLines) {
-        if (y > 760) {
-          doc.addPage();
-          y = 56;
-        }
-        doc.text(line, margin, y);
-        y += 12;
-      }
-    }
-
-    if (y > 610) {
-      doc.addPage();
-      y = 56;
-    }
-
-    doc.setDrawColor(190, 200, 190);
-    doc.setLineWidth(0.7);
-    const footerY = Math.max(y + 18, 640);
-    const fieldWidth = (pageWidth - margin * 2 - 24) / 2;
-
-    const drawMoveSignatureBlock = (title: string, x: number, yPos: number, width: number) => {
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(9);
-      doc.text(title, x, yPos);
-
-      const boxY = yPos + 10;
-
-      doc.setFont('helvetica', 'bold');
-      doc.text('Manager', x + 12, boxY + 16);
-      doc.setFont('helvetica', 'normal');
-      doc.text('Signature', x + 92, boxY + 16);
-      doc.line(x + 160, boxY + 12, x + width - 110, boxY + 12);
-      doc.text('Date', x + width - 105, boxY + 16);
-      doc.line(x + width - 70, boxY + 12, x + width - 12, boxY + 12);
-
-      const tenantRowY = boxY + 44;
-
-      doc.setFont('helvetica', 'bold');
-      doc.text('Tenant', x + 12, tenantRowY + 16);
-      doc.setFont('helvetica', 'normal');
-      doc.text('Signature', x + 92, tenantRowY + 16);
-      doc.line(x + 160, tenantRowY + 12, x + width - 110, tenantRowY + 12);
-      doc.text('Date', x + width - 105, tenantRowY + 16);
-      doc.line(x + width - 70, tenantRowY + 12, x + width - 12, tenantRowY + 12);
-    };
-
-    const moveInFooterY = footerY + 18;
-    const moveOutFooterY = footerY + 110;
-
-    drawMoveSignatureBlock('Move-in', margin, moveInFooterY, pageWidth - margin * 2);
-    drawMoveSignatureBlock('Move-out', margin, moveOutFooterY, pageWidth - margin * 2);
 
     const fileName = `${(selectedInspection.tenants || 'inspection').replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-inspection-contract.pdf`;
     openPdfPreview(doc, fileName);

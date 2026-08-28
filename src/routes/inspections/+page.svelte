@@ -416,35 +416,35 @@
       y += 16;
     }
 
-    const signatureY = y + 12;
+    const signatureY = y + 20;
     const drawMoveSignatureBlock = (title: string, x: number, yPos: number, width: number) => {
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(9);
       doc.text(title, x, yPos);
 
-      const rowY = yPos + 10;
+      const labelX = x + 12;
+      const sigLabelX = x + 94;
+      const sigLineStartX = x + 166;
+      const sigLineEndX = x + width - 155;
+      const dateLabelX = x + width - 190;
+      const dateLineStartX = x + width - 150;
 
-      doc.setFont('helvetica', 'bold');
-      doc.text('Manager', x + 12, rowY + 16);
-      doc.setFont('helvetica', 'normal');
-      doc.text('Signature', x + 92, rowY + 16);
-      doc.line(x + 160, rowY + 12, x + width - 110, rowY + 12);
-      doc.text('Date', x + width - 105, rowY + 16);
-      doc.line(x + width - 70, rowY + 12, x + width - 12, rowY + 12);
+      const drawSignatureRow = (role: string, rowY: number) => {
+        doc.setFont('helvetica', 'bold');
+        doc.text(role, labelX, rowY + 10);
+        doc.setFont('helvetica', 'normal');
+        doc.text('Signature', sigLabelX, rowY + 10);
+        doc.line(sigLineStartX, rowY + 7, sigLineEndX, rowY + 7);
+        doc.text('Date', dateLabelX, rowY + 10);
+        doc.line(dateLineStartX, rowY + 7, x + width - 12, rowY + 7);
+      };
 
-      const tenantRowY = rowY + 44;
-
-      doc.setFont('helvetica', 'bold');
-      doc.text('Tenant', x + 12, tenantRowY + 16);
-      doc.setFont('helvetica', 'normal');
-      doc.text('Signature', x + 92, tenantRowY + 16);
-      doc.line(x + 160, tenantRowY + 12, x + width - 110, tenantRowY + 12);
-      doc.text('Date', x + width - 105, tenantRowY + 16);
-      doc.line(x + width - 70, tenantRowY + 12, x + width - 12, tenantRowY + 12);
+      drawSignatureRow('Manager', yPos + 18);
+      drawSignatureRow('Tenant', yPos + 48);
     };
 
     drawMoveSignatureBlock('Move-in', margin, signatureY, pageWidth - margin * 2);
-    drawMoveSignatureBlock('Move-out', margin, signatureY + 92, pageWidth - margin * 2);
+    drawMoveSignatureBlock('Move-out', margin, signatureY + 90, pageWidth - margin * 2);
     y = signatureY + 180;
 
     doc.setFont('helvetica', 'bold');
@@ -483,30 +483,6 @@
       }
 
       y += 8;
-    }
-
-    const notesText = [form.notes.trim(), form.checkoutNotes.trim()].filter(Boolean).join('\n\n');
-
-    if (y > 680) {
-      doc.addPage();
-      y = 56;
-    }
-
-    doc.setFont('helvetica', 'bold');
-    doc.text('9. INCLUDED ITEMS / FINAL NOTES', margin, y);
-    y += 20;
-
-    if (notesText) {
-      doc.setFont('helvetica', 'normal');
-      const notesLines = doc.splitTextToSize(notesText, pageWidth - margin * 2);
-      for (const line of notesLines) {
-        if (y > 760) {
-          doc.addPage();
-          y = 56;
-        }
-        doc.text(line, margin, y);
-        y += 12;
-      }
     }
 
     const fileName = `${(form.tenants || 'inspection').replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-inspection-contract.pdf`;
