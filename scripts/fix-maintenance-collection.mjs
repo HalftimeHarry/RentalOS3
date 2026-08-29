@@ -85,6 +85,13 @@ const main = async () => {
       minSelect: 0
     },
     {
+      name: 'updates',
+      type: 'json',
+      required: false,
+      presentable: false,
+      hidden: false
+    },
+    {
       name: 'created_by',
       type: 'relation',
       required: false,
@@ -114,11 +121,13 @@ const main = async () => {
     throw new Error('Collection "tenants" was not found. Create the tenants collection first.');
   }
 
-  const relationField = (field) => (
-    field.name === 'tenant'
-      ? { ...field, collectionId: tenantsCollection.id }
-      : field
-  );
+  const relationField = (field) => {
+    if (field.name === 'tenant') {
+      return { ...field, collectionId: tenantsCollection.id };
+    }
+
+    return field;
+  };
 
   const finalFields = fields.map(relationField);
 
@@ -130,14 +139,36 @@ const main = async () => {
       return;
     }
 
-    const nextFields = existing.fields?.length
-      ? existing.fields.map((field) => field.name === 'tenant' ? { ...field, type: 'relation', collectionId: tenantsCollection.id } : field)
-      : finalFields;
+    const nextFields = existing.fields?.length ? [...existing.fields.filter((field) => field.name !== 'rental' && field.name !== 'reply')] : [];
+
+    const seededFields = new Map(nextFields.map((field) => [field.name, field]));
+    if (!seededFields.has('tenant')) seededFields.set('tenant', { ...tenantField, collectionId: tenantsCollection.id });
+
+    for (const field of finalFields) {
+      if (!seededFields.has(field.name)) {
+        seededFields.set(field.name, field);
+      }
+    }
+
+    const orderedFields = [
+      'tenant',
+      'problem',
+      'image',
+      'status',
+      'updates',
+      'created_by'
+    ].flatMap((name) => {
+      const field = seededFields.get(name);
+      return field ? [field] : [];
+    });
+
+    const extraFields = [...seededFields.values()].filter((field) => !orderedFields.some((candidate) => candidate.name === field.name));
+    const mergedFields = [...orderedFields, ...extraFields];
 
     const updated = await pb.collections.update(existing.id, {
       ...existing,
       ...collectionPayload,
-      fields: nextFields
+      fields: mergedFields
     });
 
     console.log('Updated maintenance collection successfully.');

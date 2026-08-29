@@ -15,10 +15,21 @@
   let cameraError = $state('');
   let videoElement: HTMLVideoElement | null = null;
   let cameraStream: MediaStream | null = null;
+  type MaintenanceThreadUpdate = {
+    id?: string;
+    author?: 'tenant' | 'admin' | 'system';
+    role?: 'tenant' | 'admin';
+    message?: string;
+    created?: string;
+  };
+
   let tenantStatusLoaded = $state(false);
-  let maintenanceRequests = $state<Array<{ id: string; created?: string; problem?: string; image?: string | string[]; tenant?: string; status?: string }>>([]);
+  let maintenanceRequests = $state<Array<{ id: string; created?: string; problem?: string; image?: string | string[]; tenant?: string; status?: string; updates?: MaintenanceThreadUpdate[]; created_by?: string; updated?: string }>>([]);
   let maintenanceLoading = $state(false);
   let maintenanceError = $state('');
+  let statusDrafts = $state<Record<string, string>>({});
+  let replyDrafts = $state<Record<string, string>>({});
+  let updatingStatusId: string | null = $state(null);
   const maintenanceStatusOptions = ['reported', 'active', 'closed', 're-opend'] as const;
   const maintenanceStatusLabel = (status?: string) => {
     switch (status) {
@@ -44,22 +55,103 @@
     return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(date);
   }
 
-  function normalizeImages(value?: string | string[] | Record<string, unknown> | Array<Record<string, unknown>> | null) {
+  function plainTextFromHtml(value?: string) {
+    if (!value) return '';
+
+    return value
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/?p>/gi, '\n')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/&amp;/gi, '&')
+      .replace(/&lt;/gi, '<')
+      .replace(/&gt;/gi, '>')
+      .replace(/&quot;/gi, '"')
+      .replace(/&#39;/gi, "'")
+      .replace(/\r/g, '')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  }
+
+  function normalizeThreadUpdates(value?: unknown): MaintenanceThreadUpdate[] {
+    if (!Array.isArray(value)) return [];
+
+    return value
+      .filter((entry): entry is Record<string, unknown> => !!entry && typeof entry === 'object')
+      .map((entry) => {
+        const message = typeof entry.message === 'string' ? entry.message : typeof entry.text === 'string' ? entry.text : '';
+        const author = entry.author === 'tenant' || entry.author === 'admin' ? entry.author : 'system';
+        const role = entry.role === 'tenant' || entry.role === 'admin' ? entry.role : undefined;
+        const created = typeof entry.created === 'string' ? entry.created : undefined;
+        return {
+          id: typeof entry.id === 'string' ? entry.id : undefined,
+          author,
+          role,
+          message,
+          created
+        };
+      })
+      .filter((entry) => !!entry.message?.trim());
+  }
+
+  function getTimelineEntries(request: { created?: string; updated?: string; updates?: MaintenanceThreadUpdate[] }) {
+    const timeline: Array<{ label: string; created?: string; message?: string; author?: 'tenant' | 'admin' | 'system'; }> = [
+      {
+        label: 'Submitted',
+        created: request.created,
+        author: 'system',
+        message: 'Issue reported by tenant'
+      }
+    ];
+
+    const updates = normalizeThreadUpdates(request.updates ?? []);
+    updates.forEach((update) => {
+      timeline.push({
+        label: update.author === 'admin' ? 'Admin reply' : update.author === 'tenant' ? 'Tenant reply' : 'Update',
+        created: update.created ?? request.updated ?? request.created,
+        author: update.author,
+        message: update.message
+      });
+    });
+
+    return timeline.sort((a, b) => {
+      const left = new Date(a.created ?? 0).getTime();
+      const right = new Date(b.created ?? 0).getTime();
+      return left - right;
+    });
+  }
+
+  function normalizeImages(value?: string | string[] | Record<string, unknown> | Array<Record<string, unknown>> | null, record?: Partial<Record<string, any>>) {
     if (!value) return [];
 
     const candidates = Array.isArray(value) ? value : [value];
 
     return candidates.flatMap((entry) => {
       if (typeof entry === 'string') {
-        return entry.trim() ? [entry] : [];
+        const trimmed = entry.trim();
+        if (!trimmed) return [];
+
+        if (/^https?:\/\//i.test(trimmed) || trimmed.startsWith('data:') || trimmed.startsWith('blob:')) {
+          return [trimmed];
+        }
+
+        if (trimmed.startsWith('/api/files/') || trimmed.startsWith('/')) {
+          return [trimmed];
+        }
+
+        if (record && record.collectionId) {
+          return [pocketbase.client.files.getURL(record as Record<string, any>, trimmed)];
+        }
+
+        return [trimmed];
       }
 
       if (entry && typeof entry === 'object') {
-        const record = entry as Record<string, unknown>;
-        const candidate = typeof record.url === 'string' ? record.url :
-          typeof record.src === 'string' ? record.src :
-          typeof record.path === 'string' ? record.path :
-          typeof record.file === 'string' ? record.file : '';
+        const recordObject = entry as Record<string, unknown>;
+        const candidate = typeof recordObject.url === 'string' ? recordObject.url :
+          typeof recordObject.src === 'string' ? recordObject.src :
+          typeof recordObject.path === 'string' ? recordObject.path :
+          typeof recordObject.file === 'string' ? recordObject.file : '';
 
         if (!candidate.trim()) {
           console.warn('[maintenance] filtered unsupported object-valued image record', entry);
@@ -75,6 +167,8 @@
   async function loadMaintenanceRequests() {
     if (!isAdmin && !tenantProfile?.id) {
       maintenanceRequests = [];
+      statusDrafts = {};
+      replyDrafts = {};
       return;
     }
 
@@ -86,13 +180,21 @@
       const records = await pocketbase.client.collection('maintenance').getFullList({
         sort: '-created',
         filter,
-        expand: 'tenant.user'
+        expand: 'tenant.user,created_by'
       });
-      maintenanceRequests = records as Array<{ id: string; created?: string; problem?: string; image?: string | string[]; tenant?: string; status?: string }>;
+      maintenanceRequests = records as Array<{ id: string; created?: string; problem?: string; image?: string | string[]; tenant?: string; status?: string; updates?: MaintenanceThreadUpdate[]; created_by?: string; updated?: string }>;
+      statusDrafts = Object.fromEntries(
+        maintenanceRequests.map((request) => [request.id, request.status ?? 'reported'])
+      );
+      replyDrafts = Object.fromEntries(
+        maintenanceRequests.map((request) => [request.id, ''])
+      );
     } catch (loadError) {
       console.error('[maintenance page] failed to load maintenance requests:', loadError);
       maintenanceError = 'We could not load your maintenance history right now.';
       maintenanceRequests = [];
+      statusDrafts = {};
+      replyDrafts = {};
     } finally {
       maintenanceLoading = false;
     }
@@ -198,6 +300,50 @@
       .replace(/>/g, '&gt;');
 
     return `<p>${safe.replace(/\n{2,}/g, '</p><p>').replace(/\n/g, '<br />')}</p>`;
+  }
+
+  async function updateMaintenanceStatus(requestId: string, nextStatus: string, nextReply?: string) {
+    const normalizedStatus = maintenanceStatusOptions.includes(nextStatus as typeof maintenanceStatusOptions[number])
+      ? nextStatus
+      : 'reported';
+
+    const cleanedReply = (nextReply ?? '').trim();
+    const currentRequest = maintenanceRequests.find((request) => request.id === requestId);
+    const currentThread = normalizeThreadUpdates(currentRequest?.updates);
+
+    const nextThreadEntry: MaintenanceThreadUpdate = {
+      id: typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      author: isAdmin ? 'admin' : 'tenant',
+      role: isAdmin ? 'admin' : 'tenant',
+      message: cleanedReply,
+      created: new Date().toISOString()
+    };
+
+    const nextThread = cleanedReply ? [...currentThread, nextThreadEntry] : currentThread;
+    const updatePayload: Record<string, unknown> = {
+      status: normalizedStatus,
+      updates: nextThread
+    };
+
+    updatingStatusId = requestId;
+    errorMessage = '';
+    statusMessage = '';
+
+    try {
+      await pocketbase.client.collection('maintenance').update(requestId, updatePayload);
+      statusDrafts[requestId] = normalizedStatus;
+      replyDrafts[requestId] = cleanedReply;
+      await loadMaintenanceRequests();
+      statusMessage = 'Maintenance update saved.';
+    } catch (updateError) {
+      console.error('[maintenance page] failed to update status:', updateError);
+      const responseData = updateError && typeof updateError === 'object' && 'response' in updateError
+        ? JSON.stringify((updateError as any).response?.data ?? null, null, 2)
+        : 'No backend response details were returned.';
+      errorMessage = `We could not update that maintenance request. ${responseData}`;
+    } finally {
+      updatingStatusId = null;
+    }
   }
 
   async function submitMaintenanceIssue() {
@@ -346,43 +492,125 @@
   {:else if maintenanceError}
     <p class="error-text">{maintenanceError}</p>
   {:else if maintenanceRequests.length}
-    <div class="table-wrap">
-      <table class="request-table">
-        <thead>
-          <tr>
-            <th>Submitted</th>
-            <th>Status</th>
-            <th>Issue</th>
-            <th>Photos</th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each maintenanceRequests as request}
-            <tr>
-              <td>{formatRequestDate(request.created)}</td>
-              <td><span class="status-pill {request.status ?? 'reported'}">{maintenanceStatusLabel(request.status)}</span></td>
-              <td>
-                <div class="request-problem">
-                  {@html request.problem ?? '<p>No issue details were provided.</p>'}
-                </div>
-              </td>
-              <td>
-                {#if normalizeImages(request.image).length}
-                  <div class="request-image-grid">
-                    {#each normalizeImages(request.image) as imageUrl}
-                      <a class="request-image-link" href={imageUrl} target="_blank" rel="noreferrer noopener">
-                        <img src={imageUrl} alt="Maintenance request photo" />
-                      </a>
-                    {/each}
+    <div class="request-card-list">
+      {#each maintenanceRequests as request}
+        {@const requestImages = normalizeImages(request.image, request as Partial<Record<string, any>>)}
+        {@const timelineEntries = getTimelineEntries(request)}
+        <article class="request-card">
+          <div class="request-card-head">
+            <div>
+              <p class="request-label">Submitted</p>
+              <strong>{formatRequestDate(request.created)}</strong>
+            </div>
+            <div class="status-control">
+              <label class="status-select-wrap">
+                <span class="request-label">Status</span>
+                <select
+                  value={statusDrafts[request.id] ?? request.status ?? 'reported'}
+                  onchange={(event) => {
+                    const nextStatus = (event.currentTarget as HTMLSelectElement).value;
+                    statusDrafts[request.id] = nextStatus;
+                  }}
+                  disabled={updatingStatusId === request.id}
+                >
+                  {#each maintenanceStatusOptions as option}
+                    <option value={option}>{maintenanceStatusLabel(option)}</option>
+                  {/each}
+                </select>
+              </label>
+              <button
+                class="button secondary-button compact-button"
+                type="button"
+                disabled={
+                  updatingStatusId === request.id ||
+                  ((statusDrafts[request.id] ?? request.status ?? 'reported') === (request.status ?? 'reported') &&
+                    (replyDrafts[request.id] ?? '') === plainTextFromHtml(request.reply))
+                }
+                onclick={() => void updateMaintenanceStatus(request.id, statusDrafts[request.id] ?? request.status ?? 'reported', replyDrafts[request.id])}
+              >
+                {updatingStatusId === request.id ? 'Saving...' : 'Submit'}
+              </button>
+            </div>
+          </div>
+
+          <div class="request-card-block">
+            <p class="request-label">Issue</p>
+            <div class="request-problem issue-box">
+              {@html request.problem ?? '<p>No issue details were provided.</p>'}
+            </div>
+          </div>
+
+          <div class="request-card-block">
+            <p class="request-label">Timeline</p>
+            <div class="timeline-list">
+              {#each timelineEntries as entry}
+                <div class="timeline-item">
+                  <span class={`timeline-pill ${entry.author === 'admin' ? 'admin-pill' : entry.author === 'tenant' ? 'tenant-pill' : ''}`}>
+                    {entry.label}
+                  </span>
+                  <div class="timeline-body">
+                    <strong>{formatRequestDate(entry.created)}</strong>
+                    {#if entry.message && /<\/?[a-z][\s\S]*>/i.test(entry.message)}
+                      <div class="timeline-reply">
+                        {@html entry.message}
+                      </div>
+                    {:else if entry.message}
+                      <p class="timeline-meta">{entry.message}</p>
+                    {/if}
                   </div>
-                {:else}
-                  <span class="muted">No photos</span>
-                {/if}
-              </td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
+                </div>
+              {/each}
+            </div>
+          </div>
+
+          {#if isAdmin || !isAdmin}
+            <div class="request-card-block reply-composer-block">
+              <label class="reply-field">
+                <span class="request-label">{isAdmin ? 'Add update' : 'Add reply'}</span>
+                <textarea
+                  rows="3"
+                  value={replyDrafts[request.id] ?? ''}
+                  onchange={(event) => {
+                    const nextReply = (event.currentTarget as HTMLTextAreaElement).value;
+                    replyDrafts[request.id] = nextReply;
+                  }}
+                  placeholder={isAdmin ? 'Share the next update with the tenant...' : 'Share the latest update with the admin...'}
+                  disabled={updatingStatusId === request.id}
+                ></textarea>
+              </label>
+              <button
+                class="button compact-button reply-submit-button success-button"
+                type="button"
+                disabled={
+                  updatingStatusId === request.id ||
+                  !(
+                    ((statusDrafts[request.id] ?? request.status ?? 'reported') !== (request.status ?? 'reported')) ||
+                    ((replyDrafts[request.id] ?? '').trim().length > 0)
+                  )
+                }
+                onclick={() => void updateMaintenanceStatus(request.id, statusDrafts[request.id] ?? request.status ?? 'reported', replyDrafts[request.id])}
+              >
+                Submit reply
+              </button>
+            </div>
+          {/if}
+
+          <div class="request-card-block">
+            <p class="request-label">Photos</p>
+            {#if requestImages.length}
+              <div class="request-image-grid">
+                {#each requestImages as imageUrl}
+                  <a class="request-image-link" href={imageUrl} target="_blank" rel="noreferrer noopener">
+                    <img src={imageUrl} alt="Maintenance request photo" />
+                  </a>
+                {/each}
+              </div>
+            {:else}
+              <span class="muted">No photos</span>
+            {/if}
+          </div>
+        </article>
+      {/each}
     </div>
   {:else}
     <p class="muted">No maintenance requests have been submitted yet.</p>
@@ -419,15 +647,37 @@
   .table-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 16px; }
   .table-header h2 { margin: 0; font-size: 1.25rem; }
   .subtle-badge { background: #f4f7ef; border-color: #dfe8df; }
-  .table-wrap { overflow-x: auto; }
-  .request-table { width: 100%; border-collapse: collapse; min-width: 680px; }
-  .request-table th, .request-table td { border-bottom: 1px solid #e4ece4; padding: 12px 10px; text-align: left; vertical-align: top; }
-  .request-table th { color: #536864; font-size: 12px; letter-spacing: .04em; text-transform: uppercase; }
+  .request-card-list { display: grid; gap: 16px; }
+  .request-card { display: grid; gap: 16px; padding: 18px; border: 1px solid #dfe8df; border-radius: 16px; background: linear-gradient(180deg, #ffffff 0%, #f8faf7 100%); box-shadow: 0 12px 24px rgba(24, 59, 53, 0.04); }
+  .request-card-head { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+  .status-control { display: flex; align-items: end; gap: 10px; }
+  .status-select-wrap { display: grid; gap: 6px; }
+  .status-select-wrap select { min-width: 150px; border: 1px solid #dfe8df; border-radius: 10px; background: #fbfdfb; color: #183b35; padding: 9px 10px; font: inherit; }
+  .request-label { margin: 0 0 6px; color: #67807d; font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+  .request-card-block { display: grid; gap: 8px; }
+  .compact-button { padding: 9px 12px; font-size: 12px; }
+  .timeline-list { display: grid; gap: 12px; }
+  .timeline-item { display: grid; grid-template-columns: auto 1fr; gap: 12px; align-items: start; padding: 12px 14px; border: 1px solid #dfe8df; border-radius: 12px; background: #fbfdfb; }
+  .timeline-pill { display: inline-flex; align-items: center; border-radius: 999px; padding: 6px 9px; font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; background: #edf5d9; color: #183b35; }
+  .admin-pill { background: #eef4ff; color: #204a7e; }
+  .tenant-pill { background: #edf9f1; color: #1f5e3a; }
+  .timeline-body { display: grid; gap: 6px; }
+  .timeline-body strong { color: #183b35; }
+  .timeline-meta { margin: 0; color: #71837c; font-size: 12px; }
+  .timeline-reply { color: #183b35; line-height: 1.6; }
+  .timeline-reply :global(p) { margin: 0 0 8px; }
+  .timeline-reply :global(p:last-child) { margin-bottom: 0; }
+  .reply-composer-block { gap: 10px; }
+  .reply-field { display: grid; gap: 6px; }
+  .reply-field textarea { width: 100%; box-sizing: border-box; border: 1px solid #dfe8df; border-radius: 10px; background: #fbfdfb; color: #183b35; padding: 11px 12px; resize: vertical; font: inherit; }
+  .reply-submit-button { justify-self: start; }
+  .success-button { background: #1c6c42; border-color: #1c6c42; color: #fff; }
   .request-problem { line-height: 1.6; color: #183b35; }
+  .issue-box { min-height: 128px; padding: 14px; border: 1px solid #dfe8df; border-radius: 12px; background: #fbfdfb; }
   .request-problem :global(p) { margin: 0 0 8px; }
   .request-problem :global(p:last-child) { margin-bottom: 0; }
-  .request-image-grid { display: flex; flex-wrap: wrap; gap: 8px; }
-  .request-image-link { display: block; width: 72px; height: 72px; border-radius: 10px; overflow: hidden; border: 1px solid #dfe8df; background: #f4f8f4; }
+  .request-image-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 12px; }
+  .request-image-link { display: block; width: 100%; aspect-ratio: 1; border-radius: 12px; overflow: hidden; border: 1px solid #dfe8df; background: #f4f8f4; }
   .request-image-link img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .status-pill { display: inline-flex; align-items: center; border-radius: 999px; padding: 5px 10px; font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
   .status-pill.reported { background: #eaf4ff; color: #114d8a; }

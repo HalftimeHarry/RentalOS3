@@ -71,7 +71,7 @@ const main = async () => {
     listRule: '@request.auth.role = "admin" || tenant.user = @request.auth.id',
     viewRule: '@request.auth.role = "admin" || tenant.user = @request.auth.id',
     createRule: '@request.auth.role = "admin" || (@request.auth.id != "" && tenant.user = @request.auth.id && tenant.status = "active")',
-    updateRule: '@request.auth.role = "admin" || (tenant.user = @request.auth.id && @request.auth.id != "")',
+    updateRule: '@request.auth.role = "admin" || tenant.user = @request.auth.id',
     deleteRule: '@request.auth.role = "admin"'
   });
 
