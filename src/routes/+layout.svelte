@@ -21,7 +21,7 @@
 	let userRole = $derived((pocketbase.client.authStore.model?.role as string | undefined) ?? 'renter');
 	let isAdmin = $derived(userRole === 'admin');
 	let canViewBills = $derived(isAdmin || hasRentalReference);
-	let shouldShowInspectionHistory = $derived(!isAdmin && (hasActiveTenantStatus || hasRentalReference));
+	let shouldShowInspectionHistory = $derived(isAdmin);
 	let limitSidebarToBasicRoutes = $derived(!isAdmin && !hasRentalReference && !hasActiveTenantStatus);
 	let roleLabel = $derived(userRole === 'admin' ? 'Admin' : 'Renter');
 
@@ -104,11 +104,11 @@
 					{/if}
 				{/if}
 				<a class:active={pathname === '/rental'} href="/rental"><Building2 size={17} /> Rental</a>
-				{#if shouldShowInspectionHistory || isAdmin}
+				{#if shouldShowInspectionHistory}
 					<a class:active={pathname === '/inspections/history'} href="/inspections/history"><ClipboardCheck size={17} /> Inspection history</a>
 				{/if}
 				{#if !limitSidebarToBasicRoutes}
-					<a class:active={pathname === '/maintenance'} href="/maintenance"><Wrench size={17} /> Maintenance</a>
+					<a class:active={pathname === '/maintenance'} href="/maintenance"><Wrench size={17} /> Maintenance / 30-day Notice</a>
 					{#if isAdmin}
 						<a class:active={pathname === '/inspections'} href="/inspections"><ClipboardCheck size={17} /> Inspections</a>
 					{/if}

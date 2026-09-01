@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from 'svelte';
-  import { Camera, FileImage, Wrench } from '@lucide/svelte';
+  import { Camera, FileImage, Printer, Wrench } from '@lucide/svelte';
   import { pocketbase } from '$lib/pocketbase/PocketBaseProvider';
   import { renterService } from '$lib/services/RenterService';
   import type { RenterProfile } from '$lib/services/RenterService';
@@ -302,6 +302,145 @@
     return `<p>${safe.replace(/\n{2,}/g, '</p><p>').replace(/\n/g, '<br />')}</p>`;
   }
 
+  function printMaintenanceRequest(request: { id: string; created?: string; problem?: string; tenant?: string; status?: string; updates?: MaintenanceThreadUpdate[] }) {
+    if (typeof window === 'undefined') return;
+
+    const printWindow = window.open('', '_blank', 'noopener,noreferrer');
+    if (!printWindow) return;
+
+    const noticeDate = formatRequestDate(request.created);
+    const tenantLabel = tenantProfile?.tenant_name || 'Tenant';
+    const landlordName = 'Dustin Dinsmore';
+    const propertyAddress = '2728 B Street, #102\nSan Diego, CA 92102';
+    const issueHtml = request.problem && /<\/?[a-z][\s\S]*>/i.test(request.problem)
+      ? request.problem
+      : `<p>${(request.problem ?? 'No issue details were provided.').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br />')}</p>`;
+
+    const timelineHtml = getTimelineEntries(request)
+      .map((entry) => {
+        const entryDate = formatRequestDate(entry.created);
+        const body = entry.message && /<\/?[a-z][\s\S]*>/i.test(entry.message)
+          ? entry.message
+          : `<p>${(entry.message ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br />')}</p>`;
+
+        return `
+          <div class="print-timeline-item">
+            <div class="print-timeline-label">${entry.label}</div>
+            <div class="print-timeline-meta"><strong>${entryDate}</strong> — ${entry.message ? 'Issue reported by tenant' : 'Update'}</div>
+            <div class="print-timeline-body">${body}</div>
+          </div>
+        `;
+      })
+      .join('');
+
+    printWindow.document.write(`<!doctype html>
+      <html>
+        <head>
+          <meta charset="utf-8" />
+          <title>30-day Notice</title>
+          <style>
+            body {
+              margin: 32px;
+              font-family: Arial, Helvetica, sans-serif;
+              color: #183b35;
+              line-height: 1.6;
+            }
+            .notice {
+              max-width: 820px;
+              margin: 0 auto;
+            }
+            .meta {
+              margin-bottom: 18px;
+              color: #536864;
+              font-size: 13px;
+            }
+            h1 {
+              margin: 0 0 18px;
+              font-size: 24px;
+            }
+            .subject {
+              font-weight: 700;
+              margin-bottom: 18px;
+            }
+            .address-block {
+              margin: 18px 0;
+            }
+            .signature {
+              margin-top: 26px;
+            }
+            .timeline {
+              margin-top: 28px;
+              border-top: 1px solid #dfe8df;
+              padding-top: 18px;
+            }
+            .print-timeline-item {
+              border: 1px solid #dfe8df;
+              border-radius: 10px;
+              padding: 12px 14px;
+              margin-bottom: 12px;
+            }
+            .print-timeline-label {
+              font-size: 11px;
+              letter-spacing: .08em;
+              text-transform: uppercase;
+              color: #688078;
+              font-weight: 700;
+              margin-bottom: 6px;
+            }
+            .print-timeline-meta {
+              font-size: 13px;
+              margin-bottom: 6px;
+            }
+            .print-timeline-body p {
+              margin: 0;
+            }
+            @media print {
+              body { margin: 0; }
+            }
+          </style>
+        </head>
+        <body>
+          <div class="notice">
+            <div class="meta">Submitted • ${noticeDate}</div>
+            <h1>30-Day Notice</h1>
+            <div class="subject">Issue</div>
+            <div class="meta">Date: ${noticeDate}</div>
+            <div class="address-block">
+              <div>To:</div>
+              <div><strong>${landlordName}</strong></div>
+              <div>Landlord</div>
+            </div>
+            <div class="address-block">
+              <div>From:</div>
+              <div><strong>${tenantLabel}</strong></div>
+              <div>Tenant</div>
+            </div>
+            <div class="address-block">
+              <div>Rental Property:</div>
+              <div>${propertyAddress.replace(/\n/g, '<br />')}</div>
+            </div>
+            <p>Dear ${landlordName},</p>
+            <p>Please accept this letter as my 30-day written notice of my intent to vacate the rental property located at:</p>
+            <p>${propertyAddress.replace(/\n/g, '<br />')}</p>
+            <p>My intended move-out date is October 1, 2026.</p>
+            <p>I will return possession of the property and all keys upon moving out. Please contact me regarding the move-out inspection, return of keys, and any other move-out procedures that need to be completed.</p>
+            <p>Thank you.</p>
+            <p class="signature">Sincerely,<br /><br /><strong>${tenantLabel}</strong></p>
+            <div class="timeline">
+              <div class="subject">Timeline</div>
+              ${timelineHtml}
+            </div>
+          </div>
+        </body>
+      </html>
+    `);
+    printWindow.document.close();
+    printWindow.focus();
+    setTimeout(() => {
+      printWindow.print();
+    }, 250);
+  }
+
   async function updateMaintenanceStatus(requestId: string, nextStatus: string, nextReply?: string) {
     const normalizedStatus = maintenanceStatusOptions.includes(nextStatus as typeof maintenanceStatusOptions[number])
       ? nextStatus
@@ -401,7 +540,7 @@
 <div class="page-header">
   <div>
     <p class="page-kicker">Home support</p>
-    <h1>Maintenance request</h1>
+    <h1>Maintenance / 30-day Notice</h1>
     <p class="muted">Report a repair issue and send any photos that help describe the problem.</p>
   </div>
   <span class="badge"><Wrench size={15} /> {isAdmin ? 'Admin view' : 'Tenant request'}</span>
@@ -518,6 +657,13 @@
                   {/each}
                 </select>
               </label>
+              <button
+                class="button secondary-button compact-button print-button"
+                type="button"
+                onclick={() => printMaintenanceRequest(request)}
+              >
+                <Printer size={14} /> Print
+              </button>
               <button
                 class="button secondary-button compact-button"
                 type="button"
@@ -653,6 +799,11 @@
   .status-control { display: flex; align-items: end; gap: 10px; }
   .status-select-wrap { display: grid; gap: 6px; }
   .status-select-wrap select { min-width: 150px; border: 1px solid #dfe8df; border-radius: 10px; background: #fbfdfb; color: #183b35; padding: 9px 10px; font: inherit; }
+  .print-button {
+    background: #1c6c42;
+    border-color: #1c6c42;
+    color: #fff;
+  }
   .request-label { margin: 0 0 6px; color: #67807d; font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
   .request-card-block { display: grid; gap: 8px; }
   .compact-button { padding: 9px 12px; font-size: 12px; }

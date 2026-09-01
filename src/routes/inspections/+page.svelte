@@ -7,6 +7,7 @@
   import { renterService } from '$lib/services/RenterService';
   import {
     buildMoveOutPrefillFromMoveIn,
+    canEditInspectionRecord,
     canEditInspectionStatus,
     canReopenInspectionForRepair,
     deriveNextWorkflowStatus,
@@ -136,6 +137,22 @@
   function isInspectionLocked() {
     if (!editInspectionId) return false;
     return !canEditInspectionStatus(workflowStatus);
+  }
+
+  function canEditCurrentInspection(record: Record<string, any> | null | undefined) {
+    const authUser = pocketbase.client.authStore.model as { id?: string; role?: string } | null;
+    const isAdmin = authUser?.role === 'admin';
+    const effectiveCurrentTenantId = selectedTenantId || currentTenantId || null;
+
+    return canEditInspectionRecord({
+      isAdmin,
+      userId: authUser?.id ?? null,
+      currentTenantId: effectiveCurrentTenantId,
+      record: {
+        tenant: record?.tenant ?? record?.tenant_id ?? null,
+        created_by: record?.created_by ?? null
+      }
+    });
   }
 
   const canSaveInspection = $derived(!isInspectionLocked());
@@ -278,6 +295,12 @@
         console.log('[inspections] loading edit record', { editId });
         try {
           const record = await pocketbase.client.collection('inspections').getOne(editId);
+          if (!canEditCurrentInspection(record)) {
+            clearEditInspectionState();
+            resetForm();
+            saveError = 'You can only edit your own tenant inspection record or an admin record.';
+            return;
+          }
           applyInspectionRecord(record);
         } catch (error) {
           if (isAutoCancelError(error)) return;
@@ -604,6 +627,13 @@
     saveMessage = '';
 
     const ownerFields = getInspectionOwnerFields();
+    const liveRecord = effectiveEditId ? await pocketbase.client.collection('inspections').getOne(effectiveEditId).catch(() => null) : null;
+    if (effectiveEditId && !canEditCurrentInspection(liveRecord)) {
+      saveError = 'You can only edit your own inspection record or a record you administer as an admin.';
+      saveMessage = '';
+      return;
+    }
+
     const payload = {
       type: inspectionType,
       property_address: form.propertyAddress.trim(),

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildInspectionHistoryFilter, buildInspectionRecordDetailEntries, buildMoveOutPrefillFromMoveIn, canEditInspectionStatus, canReopenInspectionForRepair, deriveNextWorkflowStatus, getInspectionStageMeta, isAutoCancelError, isInspectionRecordStale, isMissingResourceError, reopenInspectionForRepairStatus, resolveInspectionOwnerFields, validateInspectionSignatureRequirements } from '$lib/inspection/inspectionWorkflow';
+import { buildInspectionHistoryFilter, buildInspectionRecordDetailEntries, buildMoveOutPrefillFromMoveIn, canEditInspectionRecord, canEditInspectionStatus, canReopenInspectionForRepair, deriveNextWorkflowStatus, getInspectionStageMeta, isAutoCancelError, isInspectionRecordStale, isMissingResourceError, reopenInspectionForRepairStatus, resolveInspectionOwnerFields, validateInspectionSignatureRequirements } from '$lib/inspection/inspectionWorkflow';
 
 function createItemState() {
   return { na: false, o: false, desc: '' };
@@ -208,6 +208,36 @@ describe('inspection workflow rules', () => {
       tenantSignature: '',
       tenantSignDate: ''
     }).isValid).toBe(true);
+  });
+
+  it('only allows an active renter to edit their own inspection record unless the user is an admin', () => {
+    expect(canEditInspectionRecord({
+      isAdmin: false,
+      userId: 'user-12',
+      currentTenantId: 'tenant-42',
+      record: { tenant: 'tenant-42', created_by: 'user-99' }
+    })).toBe(true);
+
+    expect(canEditInspectionRecord({
+      isAdmin: false,
+      userId: 'user-12',
+      currentTenantId: 'tenant-42',
+      record: { tenant: null, created_by: 'user-99' }
+    })).toBe(true);
+
+    expect(canEditInspectionRecord({
+      isAdmin: false,
+      userId: 'user-12',
+      currentTenantId: 'tenant-42',
+      record: { tenant: 'tenant-99', created_by: 'user-99' }
+    })).toBe(false);
+
+    expect(canEditInspectionRecord({
+      isAdmin: true,
+      userId: 'admin-1',
+      currentTenantId: 'tenant-42',
+      record: { tenant: 'tenant-99', created_by: 'user-99' }
+    })).toBe(true);
   });
 
   it('filters inspection history to the active tenant unless the user is an admin', () => {

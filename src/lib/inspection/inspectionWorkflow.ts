@@ -43,6 +43,40 @@ export function canEditInspectionStatus(status?: InspectionWorkflowStatus | null
   return status === 'draft' || status === 'admin-complete' || status === 'tenant-reviewed' || status === 'repair-needed';
 }
 
+export function canEditInspectionRecord({
+  isAdmin,
+  userId,
+  currentTenantId,
+  record
+}: {
+  isAdmin: boolean;
+  userId?: string | null;
+  currentTenantId?: string | null;
+  record?: {
+    tenant?: string | null;
+    created_by?: string | null;
+  } | null;
+}): boolean {
+  if (isAdmin) return true;
+
+  if (!userId) return false;
+
+  const recordTenantId = record?.tenant?.trim() ?? '';
+  const recordCreatedBy = record?.created_by?.trim() ?? '';
+
+  if (currentTenantId) {
+    if (!recordTenantId || recordTenantId === currentTenantId) {
+      return true;
+    }
+  }
+
+  if (recordCreatedBy && recordCreatedBy === userId) {
+    return true;
+  }
+
+  return false;
+}
+
 export function canReopenInspectionForRepair(status?: InspectionWorkflowStatus | null) {
   return status === 'admin-approved' || status === 'checkout-approved';
 }
