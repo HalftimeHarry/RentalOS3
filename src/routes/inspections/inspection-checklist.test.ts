@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildInspectionRecordDetailEntries, buildMoveOutPrefillFromMoveIn, canEditInspectionStatus, canReopenInspectionForRepair, deriveNextWorkflowStatus, getInspectionStageMeta, isAutoCancelError, isInspectionRecordStale, isMissingResourceError, reopenInspectionForRepairStatus, resolveInspectionOwnerFields, validateInspectionSignatureRequirements } from '$lib/inspection/inspectionWorkflow';
+import { buildInspectionHistoryFilter, buildInspectionRecordDetailEntries, buildMoveOutPrefillFromMoveIn, canEditInspectionStatus, canReopenInspectionForRepair, deriveNextWorkflowStatus, getInspectionStageMeta, isAutoCancelError, isInspectionRecordStale, isMissingResourceError, reopenInspectionForRepairStatus, resolveInspectionOwnerFields, validateInspectionSignatureRequirements } from '$lib/inspection/inspectionWorkflow';
 
 function createItemState() {
   return { na: false, o: false, desc: '' };
@@ -208,5 +208,11 @@ describe('inspection workflow rules', () => {
       tenantSignature: '',
       tenantSignDate: ''
     }).isValid).toBe(true);
+  });
+
+  it('filters inspection history to the active tenant unless the user is an admin', () => {
+    expect(buildInspectionHistoryFilter({ isAdmin: true, tenantId: 'tenant-42', userId: 'user-9' })).toBe('');
+    expect(buildInspectionHistoryFilter({ isAdmin: false, tenantId: 'tenant-42', userId: 'user-9' })).toBe('tenant = "tenant-42" || created_by = "user-9"');
+    expect(buildInspectionHistoryFilter({ isAdmin: false, tenantId: null, userId: 'user-9' })).toBe('created_by = "user-9"');
   });
 });

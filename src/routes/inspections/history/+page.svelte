@@ -1,8 +1,9 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { jsPDF } from 'jspdf';
-  import { buildInspectionRecordDetailEntries, isAutoCancelError } from '$lib/inspection/inspectionWorkflow';
+  import { buildInspectionHistoryFilter, buildInspectionRecordDetailEntries, isAutoCancelError } from '$lib/inspection/inspectionWorkflow';
   import { pocketbase } from '$lib/pocketbase/PocketBaseProvider';
+  import { renterService } from '$lib/services/RenterService';
 
   type InspectionRecord = {
     id: string;
@@ -233,8 +234,19 @@
 
   onMount(async () => {
     try {
+      const authModel = pocketbase.client.authStore.model as { role?: string; id?: string } | null;
+      const isAdmin = authModel?.role === 'admin';
+      const currentUserId = authModel?.id ?? null;
+      const currentTenantProfile = await renterService.getCurrent();
+      const filter = buildInspectionHistoryFilter({
+        isAdmin,
+        tenantId: currentTenantProfile?.id ?? null,
+        userId: currentUserId
+      });
+
       const records = await pocketbase.client.collection('inspections').getFullList({
         expand: 'created_by',
+        filter,
         fields: 'id,type,property_address,unit_no,tenant,tenants,move_in_date,move_out_date,notes,checkout_notes,workflow_status,checklist,created,created_by'
       });
 

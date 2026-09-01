@@ -190,3 +190,24 @@ export function buildMoveOutPrefillFromMoveIn(record: {
     tenantName2: record.tenant_name_2 ?? undefined
   };
 }
+
+export function buildInspectionHistoryFilter({
+  isAdmin,
+  tenantId,
+  userId
+}: {
+  isAdmin: boolean;
+  tenantId?: string | null;
+  userId?: string | null;
+}): string {
+  if (isAdmin) return '';
+
+  const tenantClause = tenantId ? `tenant = "${tenantId}"` : '';
+  const createdByClause = userId ? `created_by = "${userId}"` : '';
+
+  if (tenantClause && createdByClause) {
+    return `${tenantClause} || ${createdByClause}`;
+  }
+
+  return tenantClause || createdByClause || '';
+}

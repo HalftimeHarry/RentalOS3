@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { replaceState } from '$app/navigation';
   import { Copy, Printer, RotateCcw, Save } from '@lucide/svelte';
   import { jsPDF } from 'jspdf';
   import { pocketbase } from '$lib/pocketbase/PocketBaseProvider';
@@ -127,6 +128,7 @@
   let saveMessage = $state('');
   let savingInspection = $state(false);
   let tenantOptionsRequestId = 0;
+  let incompleteRecordWarning = $state('');
 
   const canReopenForRepair = $derived(canReopenInspectionForRepair(workflowStatus));
   const getTodayDateValue = () => new Date().toISOString().slice(0, 10);
@@ -152,10 +154,23 @@
     return JSON.stringify(sectionStates) !== JSON.stringify(originalSectionStates);
   }
 
+  function getIncompleteInspectionWarning(record: Record<string, any> | null | undefined) {
+    if (!record) return '';
+
+    const missingFields: string[] = [];
+    if (!record.property_address?.trim()) missingFields.push('property address');
+    if (!record.unit_no?.trim()) missingFields.push('unit number');
+    if (!record.tenants?.trim() && !record.tenant) missingFields.push('tenant(s)');
+
+    if (!missingFields.length) return '';
+    return `This record was saved with missing ${missingFields.join(', ')}. Please review and complete those fields before final approval.`;
+  }
+
   function applyInspectionRecord(record: Record<string, any>) {
     const nextType = record.type === 'move-out' ? 'move-out' : 'move-in';
     inspectionType = nextType;
     workflowStatus = (record.workflow_status ?? 'draft') as WorkflowStatus;
+    incompleteRecordWarning = getIncompleteInspectionWarning(record);
     form = {
       propertyAddress: record.property_address ?? '2728 B Street, San Diego CA 92102',
       unitNo: record.unit_no ?? '102',
@@ -260,13 +275,19 @@
 
       if (editId) {
         editInspectionId = editId;
+        console.log('[inspections] loading edit record', { editId });
         try {
           const record = await pocketbase.client.collection('inspections').getOne(editId);
           applyInspectionRecord(record);
         } catch (error) {
           if (isAutoCancelError(error)) return;
-          console.error('[inspections] failed to load inspection for edit:', error);
-          clearEditInspectionState();
+          console.error('[inspections] failed to load inspection for edit:', {
+            editId,
+            status: typeof error === 'object' && error && 'status' in error ? (error as { status?: number }).status : undefined,
+            message: typeof error === 'object' && error && 'message' in error ? (error as { message?: string }).message : undefined,
+            error
+          });
+          resetForm();
           saveError = 'This inspection no longer exists or was deleted. A new inspection draft is ready.';
         }
       }
@@ -290,7 +311,7 @@
     if (typeof window !== 'undefined') {
       const nextUrl = new URL(window.location.href);
       nextUrl.searchParams.delete('edit');
-      window.history.replaceState({}, '', `${nextUrl.pathname}${nextUrl.search}`);
+      replaceState(nextUrl, {});
     }
   }
 
@@ -302,6 +323,7 @@
   function resetForm() {
     clearEditInspectionState();
     workflowStatus = 'draft';
+    incompleteRecordWarning = '';
     form = {
       propertyAddress: '2728 B Street, San Diego CA 92102',
       unitNo: '102',
@@ -640,7 +662,7 @@
         if (typeof window !== 'undefined') {
           const nextUrl = new URL(window.location.href);
           nextUrl.searchParams.delete('edit');
-          window.history.replaceState({}, '', `${nextUrl.pathname}${nextUrl.search}`);
+          replaceState(nextUrl, {});
         }
       } else {
         saveMessage = `Inspection saved${record?.id ? ` for ${form.tenants.trim()}` : ''}.`;
@@ -695,6 +717,10 @@
 
 {#if saveMessage}
   <div class="inline-alert success-alert" role="status">{saveMessage}</div>
+{/if}
+
+{#if incompleteRecordWarning}
+  <div class="inline-alert warning-alert" role="alert">{incompleteRecordWarning}</div>
 {/if}
 
 <section class="panel form-shell">
@@ -864,33 +890,7 @@
     gap: 18px;
   }
 
-  .inspection-tabs {
-    display: inline-flex;
-    background: #f4f7f4;
-    border: 1px solid #dfe8df;
-    border-radius: 999px;
-    padding: 4px;
-    width: fit-content;
-  }
-
-  .tab-button {
-    border: 0;
-    border-radius: 999px;
-    background: transparent;
-    padding: 8px 18px;
-    font: inherit;
-    font-weight: 700;
-    color: #536864;
-    cursor: pointer;
-  }
-
-  .tab-button.active {
-    background: #183b35;
-    color: white;
-  }
-
-  .top-grid,
-  .signature-grid {
+  .top-grid {
     display: grid;
     grid-template-columns: minmax(220px, 2fr) minmax(140px, 0.8fr) minmax(200px, 1.5fr) minmax(140px, 0.8fr);
     gap: 14px;
@@ -917,12 +917,6 @@
     font: inherit;
   }
 
-  .required-field {
-    border-color: #c77d41 !important;
-    background: #fffaf2 !important;
-    box-shadow: inset 0 0 0 1px rgba(199, 125, 65, 0.15);
-  }
-
   .field textarea {
     min-height: 120px;
     resize: vertical;
@@ -936,102 +930,8 @@
     line-height: 1.4;
   }
 
-  .short-field,
-  .compact-field {
+  .short-field {
     max-width: 200px;
-  }
-
-  .workflow-panel {
-    border: 1px solid #dfe8df;
-    border-radius: 14px;
-    background: #f7faf7;
-    padding: 16px;
-    display: grid;
-    gap: 14px;
-  }
-
-  .workflow-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: end;
-    gap: 12px;
-  }
-
-  .workflow-header h2 {
-    margin: 0;
-    font-size: 1rem;
-    color: #183b35;
-  }
-
-  .workflow-grid {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 12px;
-  }
-
-  .workflow-status-banner {
-    border: 1px solid #dfe8df;
-    border-radius: 12px;
-    background: linear-gradient(135deg, #f7faf7, #eef6f3);
-    padding: 14px 16px;
-    display: grid;
-    gap: 8px;
-  }
-
-  .mini-label {
-    display: inline-block;
-    color: #688078;
-    font-size: 11px;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-  }
-
-  .workflow-status-banner h3 {
-    margin: 4px 0 0;
-    color: #183b35;
-    font-size: 1rem;
-  }
-
-  .workflow-status-banner p,
-  .workflow-status-banner small {
-    margin: 0;
-    color: #405b57;
-    line-height: 1.5;
-  }
-
-  .workflow-card {
-    border: 1px solid #dfe8df;
-    border-radius: 12px;
-    background: white;
-    padding: 14px;
-    display: grid;
-    gap: 6px;
-    transition: border-color 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease;
-  }
-
-  .workflow-card.active {
-    border-color: #183b35;
-    box-shadow: 0 8px 24px rgba(24, 59, 53, 0.08);
-    transform: translateY(-1px);
-  }
-
-  .workflow-card.done {
-    border-color: #7ea79d;
-    background: #f3faf6;
-  }
-
-  .workflow-card h3 {
-    margin: 0;
-    color: #183b35;
-    font-size: 0.95rem;
-  }
-
-  .workflow-card p {
-    margin: 0;
-    color: #536864;
-    font-size: 12px;
-    line-height: 1.6;
   }
 
   .note-block {
@@ -1131,6 +1031,12 @@
     color: #20532b;
   }
 
+  .warning-alert {
+    background: #fff7e9;
+    border: 1px solid #f3d19a;
+    color: #7a4a08;
+  }
+
   .error-alert {
     background: #fff0f0;
     border: 1px solid #f2c7c7;
@@ -1180,8 +1086,7 @@
   }
 
   @media (max-width: 900px) {
-    .top-grid,
-    .signature-grid {
+    .top-grid {
       grid-template-columns: 1fr;
     }
 
@@ -1203,7 +1108,6 @@
     }
 
     .page-header,
-    .inspection-tabs,
     .header-actions {
       display: none !important;
     }
