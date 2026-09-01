@@ -305,16 +305,10 @@
   function printMaintenanceRequest(request: { id: string; created?: string; problem?: string; tenant?: string; status?: string; updates?: MaintenanceThreadUpdate[] }) {
     if (typeof window === 'undefined') return;
 
-    const printWindow = window.open('', '_blank', 'noopener,noreferrer');
-    if (!printWindow) return;
-
     const noticeDate = formatRequestDate(request.created);
     const tenantLabel = tenantProfile?.tenant_name || 'Tenant';
     const landlordName = 'Dustin Dinsmore';
     const propertyAddress = '2728 B Street, #102\nSan Diego, CA 92102';
-    const issueHtml = request.problem && /<\/?[a-z][\s\S]*>/i.test(request.problem)
-      ? request.problem
-      : `<p>${(request.problem ?? 'No issue details were provided.').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br />')}</p>`;
 
     const timelineHtml = getTimelineEntries(request)
       .map((entry) => {
@@ -333,7 +327,7 @@
       })
       .join('');
 
-    printWindow.document.write(`<!doctype html>
+    const printHtml = `<!doctype html>
       <html>
         <head>
           <meta charset="utf-8" />
@@ -341,43 +335,75 @@
           <style>
             body {
               margin: 32px;
-              font-family: Arial, Helvetica, sans-serif;
+              font-family: "Segoe UI", Arial, Helvetica, sans-serif;
               color: #183b35;
-              line-height: 1.6;
+              line-height: 1.7;
+              background: #fff;
             }
             .notice {
-              max-width: 820px;
+              max-width: 860px;
               margin: 0 auto;
+              padding: 12px 8px;
+            }
+            .letter-head {
+              display: flex;
+              justify-content: space-between;
+              align-items: flex-start;
+              gap: 20px;
+              margin-bottom: 22px;
             }
             .meta {
-              margin-bottom: 18px;
               color: #536864;
-              font-size: 13px;
+              font-size: 12px;
+              letter-spacing: 0.04em;
+              text-transform: uppercase;
             }
-            h1 {
-              margin: 0 0 18px;
-              font-size: 24px;
-            }
-            .subject {
+            .page-title {
+              margin: 8px 0 20px;
+              font-size: 30px;
+              letter-spacing: 0.02em;
+              text-transform: none;
               font-weight: 700;
-              margin-bottom: 18px;
+            }
+            .letter-header {
+              margin-bottom: 20px;
             }
             .address-block {
-              margin: 18px 0;
+              margin: 14px 0;
+              line-height: 1.5;
             }
-            .signature {
-              margin-top: 26px;
+            .letter-body {
+              margin-top: 8px;
             }
-            .timeline {
-              margin-top: 28px;
+            .letter-body p {
+              margin: 0 0 14px;
+              text-align: justify;
+            }
+            .signature-block {
+              margin-top: 36px;
               border-top: 1px solid #dfe8df;
               padding-top: 18px;
+            }
+            .signature-name {
+              margin-top: 14px;
+              font-weight: 700;
+            }
+            .timeline {
+              margin-top: 32px;
+              padding-top: 18px;
+              border-top: 2px solid #dfe8df;
+            }
+            .timeline-title {
+              margin: 0 0 14px;
+              font-size: 22px;
+              font-weight: 700;
             }
             .print-timeline-item {
               border: 1px solid #dfe8df;
               border-radius: 10px;
               padding: 12px 14px;
               margin-bottom: 12px;
+              background: #fafcfb;
             }
             .print-timeline-label {
               font-size: 11px;
@@ -394,51 +420,77 @@
             .print-timeline-body p {
               margin: 0;
             }
-            @media print {
-              body { margin: 0; }
-            }
+            @media print { body { margin: 0; } }
           </style>
         </head>
         <body>
           <div class="notice">
-            <div class="meta">Submitted • ${noticeDate}</div>
-            <h1>30-Day Notice</h1>
-            <div class="subject">Issue</div>
-            <div class="meta">Date: ${noticeDate}</div>
+            <div class="letter-head">
+              <div class="meta">Submitted • ${noticeDate}</div>
+            </div>
+
+            <div class="letter-header">
+              <h1 class="page-title">30-Day Notice</h1>
+              <div class="meta">Date: ${noticeDate}</div>
+            </div>
+
             <div class="address-block">
               <div>To:</div>
               <div><strong>${landlordName}</strong></div>
               <div>Landlord</div>
             </div>
+
             <div class="address-block">
               <div>From:</div>
               <div><strong>${tenantLabel}</strong></div>
               <div>Tenant</div>
             </div>
+
             <div class="address-block">
               <div>Rental Property:</div>
               <div>${propertyAddress.replace(/\n/g, '<br />')}</div>
             </div>
-            <p>Dear ${landlordName},</p>
-            <p>Please accept this letter as my 30-day written notice of my intent to vacate the rental property located at:</p>
-            <p>${propertyAddress.replace(/\n/g, '<br />')}</p>
-            <p>My intended move-out date is October 1, 2026.</p>
-            <p>I will return possession of the property and all keys upon moving out. Please contact me regarding the move-out inspection, return of keys, and any other move-out procedures that need to be completed.</p>
-            <p>Thank you.</p>
-            <p class="signature">Sincerely,<br /><br /><strong>${tenantLabel}</strong></p>
+
+            <div class="letter-body">
+              <p>Dear ${landlordName},</p>
+              <p>Please accept this letter as my 30-day written notice of my intent to vacate the rental property located at:</p>
+              <p>${propertyAddress.replace(/\n/g, '<br />')}</p>
+              <p>My intended move-out date is October 1, 2026.</p>
+              <p>I will return possession of the property and all keys upon moving out. Please contact me regarding the move-out inspection, return of keys, and any other move-out procedures that need to be completed.</p>
+              <p>Thank you.</p>
+            </div>
+
+            <div class="signature-block">
+              <p>Sincerely,</p>
+              <div class="signature-name">${tenantLabel}</div>
+            </div>
+
             <div class="timeline">
-              <div class="subject">Timeline</div>
+              <div class="timeline-title">Timeline</div>
               ${timelineHtml}
             </div>
           </div>
         </body>
-      </html>
-    `);
+      </html>`;
+
+    const printWindow = window.open('', '_blank', 'noopener,noreferrer');
+    if (!printWindow) {
+      window.print();
+      return;
+    }
+
+    printWindow.document.open();
+    printWindow.document.write(printHtml);
     printWindow.document.close();
     printWindow.focus();
+
     setTimeout(() => {
-      printWindow.print();
-    }, 250);
+      try {
+        printWindow.print();
+      } catch {
+        window.print();
+      }
+    }, 300);
   }
 
   async function updateMaintenanceStatus(requestId: string, nextStatus: string, nextReply?: string) {
