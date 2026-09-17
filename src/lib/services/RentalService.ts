@@ -129,16 +129,24 @@ export class RentalService {
   }
 
   async uploadPhotos(id: string, files: File[]) {
-    const validFiles = files.filter((file): file is File => file instanceof File && file.size > 0).slice(0, 10);
+    const validFiles = files.filter((file): file is File => file instanceof File && file.size > 0).slice(0, 100);
 
     if (!id || !validFiles.length) return null;
 
     const formData = new FormData();
     validFiles.forEach((file) => {
-      formData.append('photos', file, file.name);
+      formData.append('photos+', file, file.name);
     });
 
     return pocketbase.client.collection('rental').update(id, formData);
+  }
+
+  async removePhoto(id: string, filename: string) {
+    if (!id || !filename) return null;
+
+    return pocketbase.client.collection('rental').update(id, {
+      'photos-': [filename]
+    } as Record<string, unknown>);
   }
 }
 

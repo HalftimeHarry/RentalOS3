@@ -1,7 +1,7 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onDestroy, onMount } from 'svelte';
   import { page } from '$app/state';
-  import { Edit3, Image } from '@lucide/svelte';
+  import { Edit3, Image, Trash2 } from '@lucide/svelte';
   import { pocketbase } from '$lib/pocketbase/PocketBaseProvider';
   import { rentalService } from '$lib/services/RentalService';
   import type { Rental } from '$lib/models';
@@ -20,6 +20,7 @@
 
   let rental = $state<Rental | null>(null);
   let editing = $state(false); let address = $state(''); let rent = $state(0); let saved = $state(false);
+  const MAX_PHOTOS = 100;
   const MAX_PHOTO_SIZE_BYTES = 10 * 1024 * 1024;
   const ALLOWED_PHOTO_TYPES = new Set(['image/jpeg', 'image/png']);
 
@@ -35,7 +36,10 @@
   };
 
   let pendingPhotos = $state<File[]>([]);
+  let pendingPhotoPreviews = $state<string[]>([]);
   let uploadingPhotos = $state(false);
+  let reorderingPhotos = $state(false);
+  let draggedPhotoIndex = $state<number | null>(null);
   let pageError = $state('');
   let photoUploadError = $state('');
   let selectedPhotoUrl = $state<string | null>(null);
@@ -135,10 +139,58 @@
     selectedPhotoUrl = null;
   }
 
+  async function reorderPhotos(targetIndex: number) {
+    if (!rental || draggedPhotoIndex === null || draggedPhotoIndex === targetIndex) return;
+
+    const previousPhotos = [...(rental.photos ?? [])];
+    const reorderedPhotos = [...previousPhotos];
+    const [movedPhoto] = reorderedPhotos.splice(draggedPhotoIndex, 1);
+    reorderedPhotos.splice(targetIndex, 0, movedPhoto);
+    draggedPhotoIndex = null;
+    rental = { ...rental, photos: reorderedPhotos };
+    reorderingPhotos = true;
+    photoUploadError = '';
+
+    try {
+      await rentalService.update(rental.id, { photos: reorderedPhotos });
+    } catch (error) {
+      console.error('[rental page] photo reorder failed:', error);
+      rental = { ...rental, photos: previousPhotos };
+      photoUploadError = 'Unable to save the photo order. Please try again.';
+    } finally {
+      reorderingPhotos = false;
+    }
+  }
+
+  async function deletePhoto(photo: string) {
+    if (!rental || !isAdmin || reorderingPhotos) return;
+
+    const previousPhotos = [...(rental.photos ?? [])];
+    rental = { ...rental, photos: previousPhotos.filter((currentPhoto) => currentPhoto !== photo) };
+    reorderingPhotos = true;
+    photoUploadError = '';
+
+    try {
+      const updated = await rentalService.removePhoto(rental.id, photo);
+      if (Array.isArray(updated?.photos)) {
+        rental = { ...rental, photos: updated.photos };
+      }
+    } catch (error) {
+      console.error('[rental page] photo delete failed:', error);
+      rental = { ...rental, photos: previousPhotos };
+      photoUploadError = 'Unable to delete the photo. Please try again.';
+    } finally {
+      reorderingPhotos = false;
+    }
+  }
+
   function handlePhotoSelection(event: Event) {
     const input = event.currentTarget as HTMLInputElement | null;
     const files = Array.from(input?.files ?? []);
     const validFiles: File[] = [];
+
+    pendingPhotoPreviews.forEach((url) => URL.revokeObjectURL(url));
+    pendingPhotoPreviews = [];
 
     for (const file of files) {
       const error = getPhotoValidationError(file);
@@ -151,8 +203,15 @@
       validFiles.push(file);
     }
 
-    pendingPhotos = validFiles.slice(0, 10);
+    pendingPhotos = validFiles.slice(0, MAX_PHOTOS);
+    pendingPhotoPreviews = pendingPhotos.map((file) => URL.createObjectURL(file));
     photoUploadError = '';
+  }
+
+  function clearPendingPhotos() {
+    pendingPhotoPreviews.forEach((url) => URL.revokeObjectURL(url));
+    pendingPhotoPreviews = [];
+    pendingPhotos = [];
   }
 
   function getAuthRoleLabel() {
@@ -181,7 +240,7 @@
       const updated = await rentalService.uploadPhotos(rental.id, pendingPhotos);
       const nextPhotos = Array.isArray(updated?.photos) ? updated.photos : rental.photos ?? [];
       rental = { ...rental, photos: nextPhotos };
-      pendingPhotos = [];
+      clearPendingPhotos();
       const inputs = document.querySelectorAll<HTMLInputElement>('input[type="file"][accept="image/*"]');
       inputs.forEach((input) => {
         input.value = '';
@@ -196,6 +255,8 @@
       uploadingPhotos = false;
     }
   }
+
+  onDestroy(clearPendingPhotos);
 </script>
 <svelte:head><title>Rental · RentalOS3</title></svelte:head>
 <div class="page-header"><div><p class="page-kicker">The place you call home</p><h1>Rental details</h1><p class="muted">Keep the important property information in one place.</p><span class="role-badge">{roleLabel} role</span></div>{#if isAdmin && rental}<button class="button" onclick={() => editing = !editing}><Edit3 size={16} /> {editing ? 'Cancel' : 'Edit rental'}</button>{/if}</div>
@@ -235,23 +296,36 @@
     <h2 class="panel-title">Property photos</h2>
     {#if rental?.photos?.length}
       <div class="photo-grid">
-        {#each rental.photos as photo}
+        {#each rental.photos as photo, index}
           {@const photoUrl = rental ? pocketbase.client.files.getURL(rental, photo) : ''}
-          <img
-            class="property-photo"
-            src={photoUrl}
-            alt="Rental property"
-            tabindex="0"
-            role="button"
-            aria-label="Open photo preview"
-            onclick={() => rental && openPhotoModal(photoUrl)}
-            onkeydown={(event) => {
-              if ((event.key === 'Enter' || event.key === ' ') && rental) {
-                event.preventDefault();
-                openPhotoModal(photoUrl);
-              }
+          <div
+            class="property-photo-wrap"
+            ondragover={(event) => event.preventDefault()}
+            ondrop={(event) => {
+              event.preventDefault();
+              reorderPhotos(index);
             }}
-          />
+          >
+            <img
+              class="property-photo"
+              src={photoUrl}
+              alt="Rental property"
+              draggable={isAdmin}
+              tabindex="0"
+              role="button"
+              aria-label="Open photo preview"
+              ondragstart={() => draggedPhotoIndex = index}
+              ondragend={() => draggedPhotoIndex = null}
+              onclick={() => rental && openPhotoModal(photoUrl)}
+              onkeydown={(event) => {
+                if ((event.key === 'Enter' || event.key === ' ') && rental) {
+                  event.preventDefault();
+                  openPhotoModal(photoUrl);
+                }
+              }}
+            />
+            {#if isAdmin}<button class="photo-delete-button" type="button" aria-label={`Delete photo ${index + 1}`} title="Delete photo" onclick={(event) => { event.stopPropagation(); deletePhoto(photo); }}><Trash2 size={14} /></button>{/if}
+          </div>
         {/each}
       </div>
     {:else}
@@ -259,14 +333,16 @@
     {/if}
     {#if isAdmin}
       <div class="upload-block">
-        <label class="upload-label" for="property-photo-upload">Upload photos</label>
-        <input id="property-photo-upload" type="file" accept="image/*" multiple onchange={handlePhotoSelection} />
+        <div class="upload-heading"><span class="upload-label">Add property photos</span><span class="muted">Select multiple JPG or PNG files</span></div>
+        <div class="file-upload"><label class="file-upload-label" for="property-photo-upload">Choose photos</label><input id="property-photo-upload" type="file" accept="image/jpeg,image/png" multiple onchange={handlePhotoSelection} /></div>
         {#if pendingPhotos.length}
-          <div class="field"><span>Selected photos</span><div class="chip-list">{#each pendingPhotos as file}<span class="chip">{file.name}</span>{/each}</div><button class="button" type="button" onclick={uploadPhotos} disabled={uploadingPhotos}>{uploadingPhotos ? 'Uploading...' : 'Upload selected photos'}</button></div>
+          <div class="pending-photo-grid">{#each pendingPhotos as file, index}<figure><img src={pendingPhotoPreviews[index]} alt={file.name} /><figcaption>{file.name}</figcaption></figure>{/each}</div>
+          <button class="button" type="button" onclick={uploadPhotos} disabled={uploadingPhotos}>{uploadingPhotos ? 'Uploading...' : `Upload ${pendingPhotos.length} photo${pendingPhotos.length === 1 ? '' : 's'}`}</button>
         {/if}
         {#if photoUploadError}<p class="error-text">{photoUploadError}</p>{/if}
       </div>
     {/if}
+    {#if isAdmin && (rental?.photos?.length ?? 0) > 1}<p class="muted photo-order-hint">Drag photos to change their order{reorderingPhotos ? ' · Saving...' : ''}</p>{/if}
   </section>
 </div>
 
@@ -293,4 +369,4 @@
   </div>
 {/if}
 
-<style>.field { display: grid; gap: 7px; margin-bottom: 16px; color: #71837c; font-size: 13px; }.field input { display: block; width: 100%; box-sizing: border-box; border: 1px solid #d8e3d8; border-radius: 7px; padding: 11px; }.field input:disabled { background: #f4f7f4; color: #6b7d77; cursor: not-allowed; }.chip-list { display: flex; flex-wrap: wrap; gap: 8px; min-height: 28px; }.chip { display: inline-flex; align-items: center; border-radius: 999px; padding: 6px 10px; background: #edf5d9; color: #2a5a3f; font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }.size-chip { background: #eef4ff; color: #234a7a; }.muted { color: #72857d; }.success { color: #28664b; font-size: 13px; }.error-text { color: #8c2d2d; font-size: 13px; margin-top: 8px; }.error-debug { margin: 8px 0 0; padding: 10px 12px; border-radius: 8px; background: #fdf0f0; color: #5f1b1b; font-size: 11px; line-height: 1.5; white-space: pre-wrap; overflow-x: auto; }.auth-debug-banner { margin: 0 0 16px; padding: 8px 12px; border-radius: 999px; background: #edf5d9; color: #234a36; font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }.error-banner { margin: 0 0 16px; padding: 12px 14px; border: 1px solid #f0c6c6; border-radius: 12px; background: #fff1f1; color: #7d1d1d; display: grid; gap: 8px; } .error-banner strong { font-size: 13px; } .error-banner .error-debug { margin: 0; background: rgba(255,255,255,0.5); } .empty-rental-state { display: grid; gap: 10px; padding: 18px 14px; border: 1px dashed #cfe0bd; border-radius: 12px; background: #f8faf7; } .empty-rental-title { margin: 0; font-size: 1.05rem; font-weight: 700; color: #183b35; } .upload-block { display: grid; gap: 12px; margin-top: 16px; }.upload-label { color: #71837c; font-size: 13px; }.upload-block input[type="file"] { display: block; width: 100%; box-sizing: border-box; border: 1px solid #d8e3d8; border-radius: 7px; padding: 11px; background: white; }.photo-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }.property-photo { width: 100%; min-height: 180px; max-height: 220px; object-fit: cover; border-radius: 7px; cursor: pointer; }.photo-modal-backdrop { position: fixed; inset: 0; display: grid; place-items: start center; padding: 78px 18px 18px; background: rgba(12, 17, 17, 0.68); z-index: 100; }.photo-modal-panel { position: relative; width: min(92vw, 860px); max-height: calc(100vh - 110px); margin-top: 10px; background: rgba(255,255,255,0.97); border-radius: 18px; border: 1px solid rgba(223,232,223,0.9); box-shadow: 0 30px 80px rgba(10, 15, 14, 0.28); overflow: hidden; }.photo-modal-close { position: absolute; top: 12px; right: 12px; width: 38px; height: 38px; border: 0; border-radius: 999px; background: rgba(24, 59, 53, 0.8); color: white; font-size: 24px; cursor: pointer; }.photo-modal-image { display: block; width: 100%; max-height: calc(100vh - 130px); object-fit: contain; background: #f3f6f3; }.table-wrap { overflow-x: auto; border: 1px solid #dfe8df; border-radius: 10px; background: white; } table { width: 100%; border-collapse: collapse; min-width: 720px; text-align: left; } th { padding: 14px 18px; color: #71837c; background: #f8faf7; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; } td { padding: 18px; border-top: 1px solid #edf1ec; font-size: 14px; }</style>
+<style>.field { display: grid; gap: 7px; margin-bottom: 16px; color: #71837c; font-size: 13px; }.field input { display: block; width: 100%; box-sizing: border-box; border: 1px solid #d8e3d8; border-radius: 7px; padding: 11px; }.field input:disabled { background: #f4f7f4; color: #6b7d77; cursor: not-allowed; }.chip-list { display: flex; flex-wrap: wrap; gap: 8px; min-height: 28px; }.chip { display: inline-flex; align-items: center; border-radius: 999px; padding: 6px 10px; background: #edf5d9; color: #2a5a3f; font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }.size-chip { background: #eef4ff; color: #234a7a; }.muted { color: #72857d; }.success { color: #28664b; font-size: 13px; }.error-text { color: #8c2d2d; font-size: 13px; margin-top: 8px; }.error-debug { margin: 8px 0 0; padding: 10px 12px; border-radius: 8px; background: #fdf0f0; color: #5f1b1b; font-size: 11px; line-height: 1.5; white-space: pre-wrap; overflow-x: auto; }.auth-debug-banner { margin: 0 0 16px; padding: 8px 12px; border-radius: 999px; background: #edf5d9; color: #234a36; font-size: 12px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }.error-banner { margin: 0 0 16px; padding: 12px 14px; border: 1px solid #f0c6c6; border-radius: 12px; background: #fff1f1; color: #7d1d1d; display: grid; gap: 8px; } .error-banner strong { font-size: 13px; } .error-banner .error-debug { margin: 0; background: rgba(255,255,255,0.5); } .empty-rental-state { display: grid; gap: 10px; padding: 18px 14px; border: 1px dashed #cfe0bd; border-radius: 12px; background: #f8faf7; } .empty-rental-title { margin: 0; font-size: 1.05rem; font-weight: 700; color: #183b35; } .upload-block { display: grid; gap: 12px; margin-top: 16px; }.upload-heading { display: grid; gap: 3px; }.upload-label { color: #71837c; font-size: 13px; }.upload-block input[type="file"] { position: absolute; inset: 0; opacity: 0; cursor: pointer; }.pending-photo-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 8px; }.pending-photo-grid figure { min-width: 0; margin: 0; }.pending-photo-grid img { display: block; width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 7px; }.pending-photo-grid figcaption { overflow: hidden; margin-top: 4px; color: #71837c; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }.photo-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 12px; }.property-photo-wrap { position: relative; min-width: 0; }.property-photo { width: 100%; min-height: 180px; max-height: 220px; object-fit: cover; border-radius: 7px; cursor: grab; }.property-photo:active { cursor: grabbing; }.photo-delete-button { position: absolute; right: 8px; bottom: 8px; display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 1px solid rgba(255,255,255,0.7); border-radius: 999px; color: white; background: rgba(24,59,53,0.88); cursor: pointer; }.photo-delete-button:hover { background: #a93434; }.photo-order-hint { margin: 14px 0 0; font-size: 12px; }.photo-modal-backdrop { position: fixed; inset: 0; display: grid; place-items: start center; padding: 78px 18px 18px; background: rgba(12, 17, 17, 0.68); z-index: 100; }.photo-modal-panel { position: relative; width: min(92vw, 860px); max-height: calc(100vh - 110px); margin-top: 10px; background: rgba(255,255,255,0.97); border-radius: 18px; border: 1px solid rgba(223,232,223,0.9); box-shadow: 0 30px 80px rgba(10, 15, 14, 0.28); overflow: hidden; }.photo-modal-close { position: absolute; top: 12px; right: 12px; width: 38px; height: 38px; border: 0; border-radius: 999px; background: rgba(24, 59, 53, 0.8); color: white; font-size: 24px; cursor: pointer; }.photo-modal-image { display: block; width: 100%; max-height: calc(100vh - 130px); object-fit: contain; background: #f3f6f3; }.table-wrap { overflow-x: auto; border: 1px solid #dfe8df; border-radius: 10px; background: white; } table { width: 100%; border-collapse: collapse; min-width: 720px; text-align: left; } th { padding: 14px 18px; color: #71837c; background: #f8faf7; font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; } td { padding: 18px; border-top: 1px solid #edf1ec; font-size: 14px; }</style>

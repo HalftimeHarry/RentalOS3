@@ -91,7 +91,7 @@ const rentalSchema = {
       required: false,
       presentable: false,
       hidden: false,
-      maxSelect: 10,
+      maxSelect: 100,
       maxSize: 10485760,
       mimeTypes: ['image/jpeg', 'image/png'],
       thumbs: null,
