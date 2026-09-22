@@ -132,7 +132,7 @@ const main = async () => {
   await patchCollectionRules('users', {
     listRule: '@request.auth.role = "admin" || id = @request.auth.id',
     viewRule: '@request.auth.role = "admin" || id = @request.auth.id',
-    createRule: 'true',
+    createRule: '',
     updateRule: '@request.auth.role = "admin" || id = @request.auth.id',
     deleteRule: '@request.auth.role = "admin"'
   });
@@ -140,8 +140,8 @@ const main = async () => {
   await patchCollectionRules('tenants', {
     listRule: '@request.auth.role = "admin" || user = @request.auth.id',
     viewRule: '@request.auth.role = "admin" || user = @request.auth.id',
-    createRule: '@request.auth.role = "admin" || user = @request.auth.id',
-    updateRule: '@request.auth.role = "admin" || user = @request.auth.id',
+    createRule: '',
+    updateRule: '@request.auth.role = "admin"',
     deleteRule: '@request.auth.role = "admin"'
   });
 
