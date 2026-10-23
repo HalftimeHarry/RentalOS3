@@ -3,12 +3,14 @@
   import { goto } from '$app/navigation';
   import { ArrowUpRight, CalendarDays, CheckCircle2, CircleDollarSign, FileText, House, Users } from '@lucide/svelte';
   import { pocketbase } from '$lib/pocketbase/PocketBaseProvider';
-  import { billService } from '$lib/services/BillService';
-  import { rentalService } from '$lib/services/RentalService';
   import { renterService } from '$lib/services/RenterService';
-  import { formatDateForInput, normalizeDateOnly, parseDateOnly, renderDateLabel } from '$lib/models';
+  import { formatDateForInput, renderDateLabel } from '$lib/models';
   import { getDashboardGreeting } from '$lib/dashboard/greeting';
-  import type { Bill, BillStatus, Rental } from '$lib/models';
+  import type { Rental } from '$lib/models';
+  import type { BillDTO as Bill } from '$lib/modules/billing/application/Billing';
+  import type { PaymentState as BillStatus } from '$lib/modules/billing/domain/Bill';
+  import { submitBillingAction } from '$lib/modules/billing/ui/actions';
+  import ReceiptViewer from '$lib/modules/billing/ui/ReceiptViewer.svelte';
 
   type TenantDocumentField = 'creditData' | 'appData' | 'damageData';
 
@@ -16,8 +18,8 @@
 
   const tenantDocumentFields = ['creditData', 'appData', 'damageData'] as const satisfies readonly TenantDocumentField[];
 
-  let rental = $state<Rental | null>(null);
-  let rentals = $state<Rental[]>([]);
+  let rental = $derived(data.billing.rental);
+  let rentals = $derived(data.billing.rentals);
   let tenants = $state<Array<{
     id: string;
     tenant_name?: string;
@@ -32,7 +34,7 @@
   let creditFiles = $state<File[]>([]);
   let creditUploadError = $state('');
   let creditUploading = $state(false);
-  let allRentalBills = $state<Bill[]>([]);
+  let allRentalBills = $derived(data.billing.bills);
   let rentalBills = $derived.by(() => {
     if (!allRentalBills.length) return [];
     return selectedStatus === 'all' ? allRentalBills : allRentalBills.filter((bill) => normalizeBillStatus(bill) === selectedStatus);
@@ -41,7 +43,6 @@
     if (selectedStatus === 'all') return null;
     return rentalBills[0] ?? null;
   });
-  let activeBillRequestId = 0;
   let activeRentalRequestId = 0;
   let dashboardLoadToken = 0;
   let selectedStatus = $state<'all' | BillStatus>('open');
@@ -60,7 +61,7 @@
         return { title: 'No bills yet', description: 'Create the first monthly bill for this property.' };
     }
   });
-  let userRole = $derived((pocketbase.client.authStore.model?.role as string | undefined) ?? 'renter');
+  let userRole = $derived(data.billing.isAdmin ? 'admin' : 'renter');
   let roleLabel = $derived(userRole === 'admin' ? 'Admin' : 'Renter');
   let maintenanceIssues = $state<Array<{ id: string; created?: string; problem?: string; status?: string; image?: string | string[] }>>([]);
   let maintenanceIssuesLoading = $state(false);
@@ -78,6 +79,7 @@
   let selectedDocumentUrl = $state<string | null>(null);
   let selectedDocumentName = $state('');
   let billError = $state('');
+  let billSaving = $state(false);
   let billForm = $state({
     rent: 0,
     sdge: 0,
@@ -109,11 +111,7 @@
 
   const money = (value = 0) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(value);
   const isImageReceipt = (value: string) => /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(value);
-  const normalizeBillStatus = (bill?: Partial<Bill> | null): BillStatus => {
-    if (!bill) return 'open';
-    const status = bill.status ?? (bill.paid ? 'paid' : 'open');
-    return status === 'paid' || status === 'open' || status === 'overdue' || status === 'void' ? status : 'open';
-  };
+  const normalizeBillStatus = (bill?: Partial<Bill> | null): BillStatus => bill?.status ?? 'open';
   const statusLabel = (value?: BillStatus | null) => {
     const status = normalizeBillStatus({ status: value ?? undefined });
     switch (status) {
@@ -158,36 +156,6 @@
 
   onMount(() => {
     getGreeting();
-  });
-
-  $effect(() => {
-    if (data.rental) rental = data.rental as Rental | null;
-    if ((data.rentals as Rental[] | undefined)?.length) rentals = data.rentals as Rental[];
-  });
-
-  $effect(() => {
-    const selectedRentalId = rental?.id;
-    if (!selectedRentalId) {
-      allRentalBills = [];
-      return;
-    }
-
-    const requestId = ++activeBillRequestId;
-
-    Promise.resolve()
-      .then(async () => {
-        const bills = await billService.list(selectedRentalId);
-        return bills.sort((a, b) => parseDateOnly(b.dueDate).getTime() - parseDateOnly(a.dueDate).getTime());
-      })
-      .then((bills) => {
-        if (requestId !== activeBillRequestId) return;
-        allRentalBills = bills;
-      })
-      .catch((error) => {
-        if (requestId !== activeBillRequestId) return;
-        console.error('[dashboard page] rental bills fetch error:', error);
-        allRentalBills = [];
-      });
   });
 
   async function loadMaintenanceIssuesForCurrentRenter() {
@@ -236,41 +204,6 @@
         }
 
         const requestId = ++activeRentalRequestId;
-
-        if (userRole !== 'admin') {
-          const currentRental = await rentalService.getCurrent();
-          if (requestToken !== dashboardLoadToken || requestId !== activeRentalRequestId) return;
-
-          if (currentRental) {
-            rental = currentRental;
-            rentals = [currentRental];
-          }
-        }
-
-        const list = await rentalService.list();
-        if (requestToken !== dashboardLoadToken || requestId !== activeRentalRequestId) return;
-
-        if (list.length) {
-          rentals = list;
-
-          const selectedId = new URLSearchParams(window.location.search).get('id');
-          if (selectedId) {
-            const selected = list.find((item) => item.id === selectedId) ?? null;
-            if (selected) {
-              rental = selected;
-            }
-          }
-
-          if (!rental) {
-            rental = list[0];
-          }
-        }
-
-        if (rental?.id && userRole === 'admin') {
-          const current = await rentalService.getById(rental.id);
-          if (requestToken !== dashboardLoadToken || requestId !== activeRentalRequestId) return;
-          if (current) rental = current;
-        }
 
         if (userRole === 'admin') {
           try {
@@ -424,25 +357,26 @@
   }
 
   async function saveBillDraft() {
-    if (!selectedRentalForBill) return;
+    if (!selectedRentalForBill || billSaving) return;
+    billSaving = true;
 
     try {
       billError = '';
 
-      const createdBill = await billService.save({
+      const rentalId = selectedRentalForBill.id;
+      await submitBillingAction('/dashboard', 'createBill', {
         rental: selectedRentalForBill.id,
-        ...billForm,
+        rent: String(billForm.rent), sdge: String(billForm.sdge), att: String(billForm.att),
+        dueDate: billForm.dueDate, notes: billForm.notes,
         status: 'open',
-        paid: false
       });
 
       showBillModal = false;
       selectedRentalForBill = null;
-      await goto('/bills');
-    } catch (error) {
-      console.error('[dashboard page] failed to create bill for rental:', error);
-      billError = 'Unable to create this bill. Check that your PocketBase session is valid and the bill collection is available.';
-    }
+      await goto(`/bills?id=${encodeURIComponent(rentalId)}`);
+    } catch (cause) {
+      billError = cause instanceof Error ? cause.message : 'Unable to create this bill.';
+    } finally { billSaving = false; }
   }
 </script>
 <svelte:head><title>Overview · RentalOS3</title></svelte:head>
@@ -580,26 +514,7 @@
 {/if}
 
 {#if selectedReceiptUrl}
-  <div class="receipt-modal-backdrop" onclick={closeReceiptModal} role="presentation">
-    <div class="receipt-modal" tabindex="0" onclick={(event) => event.stopPropagation()} onkeydown={(event) => {
-      if (event.key === 'Escape') closeReceiptModal();
-    }} role="dialog" aria-modal="true" aria-label={selectedReceiptName}>
-      <div class="receipt-modal-header">
-        <h3>{selectedReceiptName}</h3>
-        <button class="icon-button" type="button" aria-label="Close receipt" onclick={closeReceiptModal}>×</button>
-      </div>
-
-      {#if isImageReceipt(selectedReceiptUrl)}
-        <img class="receipt-preview" src={selectedReceiptUrl} alt={selectedReceiptName} />
-      {:else}
-        <div class="receipt-preview-placeholder">
-          <FileText size={36} />
-          <p>{selectedReceiptName}</p>
-          <a class="button" href={selectedReceiptUrl} target="_blank" rel="noreferrer noopener">Open file</a>
-        </div>
-      {/if}
-    </div>
-  </div>
+  <ReceiptViewer url={selectedReceiptUrl} name={selectedReceiptName} close={closeReceiptModal} />
 {/if}
 
 {#if selectedDocumentUrl}
@@ -836,7 +751,7 @@
 
       <div class="modal-footer">
         <button class="button-secondary" type="button" onclick={() => showBillModal = false}>Cancel</button>
-        <button class="button" type="button" onclick={saveBillDraft}>Create bill</button>
+        <button class="button" type="button" onclick={saveBillDraft} disabled={billSaving}>{billSaving ? 'Creating...' : 'Create bill'}</button>
       </div>
     </div>
   </div>
