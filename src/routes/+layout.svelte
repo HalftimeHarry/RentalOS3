@@ -9,8 +9,9 @@
 	import { pocketbase } from '$lib/pocketbase/PocketBaseProvider';
 	import { renterService } from '$lib/services/RenterService';
 	import { rentalService } from '$lib/services/RentalService';
+	import type { LayoutProps } from './$types';
 
-	let { children } = $props<{ children?: () => unknown }>();
+	let { children }: LayoutProps = $props();
 	let isLoggedIn = $state(false);
 	let hydrated = $state(false);
 	let hasRentalReference = $state(false);
