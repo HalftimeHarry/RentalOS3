@@ -3,6 +3,7 @@
   import { replaceState } from '$app/navigation';
   import { Copy, Printer, RotateCcw, Save } from '@lucide/svelte';
   import { jsPDF } from 'jspdf';
+  import { drawInspectionPdfChecklist, drawInspectionPdfHeader } from '$lib/inspection/inspectionPdf';
   import { pocketbase } from '$lib/pocketbase/PocketBaseProvider';
   import { renterService } from '$lib/services/RenterService';
   import {
@@ -399,13 +400,6 @@
     }
   }
 
-  function formatPdfDate(value?: string) {
-    if (!value) return '—';
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return value;
-    return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(date);
-  }
-
   function previewPdfDocument(doc: jsPDF, fileName: string) {
     const pdfBlob = doc.output('blob');
     const url = URL.createObjectURL(pdfBlob);
@@ -435,100 +429,21 @@
 
   function downloadInspectionPdf() {
     const doc = new jsPDF({ unit: 'pt', format: 'letter' });
-    const pageWidth = doc.internal.pageSize.getWidth();
-    const margin = 52;
-    let y = 52;
-    const title = 'Inspection Contract';
-
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(20);
-    doc.text(title, margin, y);
-    y += 24;
-
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(10);
-
-    const lines = [
-      `Address: ${form.propertyAddress || 'Not provided'}`,
-      `Unit: ${form.unitNo || 'Not provided'}`,
-      `Tenant(s): ${form.tenants || 'Not provided'}`,
-      `Move-in date: ${formatPdfDate(form.moveInDate)}`,
-      `Move-out date: ${formatPdfDate(form.moveOutDate)}`
-    ];
-
-    for (const line of lines) {
-      doc.text(line, margin, y);
-      y += 16;
-    }
-
-    const signatureY = y + 20;
-    const drawMoveSignatureBlock = (title: string, x: number, yPos: number, width: number) => {
-      doc.setFont('helvetica', 'bold');
-      doc.setFontSize(9);
-      doc.text(title, x, yPos);
-
-      const labelX = x + 12;
-      const sigLabelX = x + 94;
-      const sigLineStartX = x + 166;
-      const sigLineEndX = x + width - 155;
-      const dateLabelX = x + width - 190;
-      const dateLineStartX = x + width - 150;
-
-      const drawSignatureRow = (role: string, rowY: number) => {
-        doc.setFont('helvetica', 'bold');
-        doc.text(role, labelX, rowY + 10);
-        doc.setFont('helvetica', 'normal');
-        doc.text('Signature', sigLabelX, rowY + 10);
-        doc.line(sigLineStartX, rowY + 7, sigLineEndX, rowY + 7);
-        doc.text('Date', dateLabelX, rowY + 10);
-        doc.line(dateLineStartX, rowY + 7, x + width - 12, rowY + 7);
-      };
-
-      drawSignatureRow('Manager', yPos + 18);
-      drawSignatureRow('Tenant', yPos + 48);
-    };
-
-    drawMoveSignatureBlock('Move-in', margin, signatureY, pageWidth - margin * 2);
-    drawMoveSignatureBlock('Move-out', margin, signatureY + 90, pageWidth - margin * 2);
-    y = signatureY + 180;
-
-    doc.setFont('helvetica', 'bold');
-    doc.text('Checklist review', margin, y);
-    y += 18;
-    doc.setFont('helvetica', 'normal');
-
-    for (const section of sections) {
-      if (y > 700) {
-        doc.addPage();
-        y = 56;
-      }
-
-      doc.setFont('helvetica', 'bold');
-      doc.text(section.title, margin, y);
-      y += 14;
-      doc.setFont('helvetica', 'normal');
-
-      for (const item of section.items) {
+    drawInspectionPdfHeader(doc, {
+      address: form.propertyAddress, unit: form.unitNo, tenants: form.tenants,
+      moveInDate: form.moveInDate, moveOutDate: form.moveOutDate
+    });
+    drawInspectionPdfChecklist(doc, sections.map((section) => ({
+      title: section.title,
+      items: section.items.map((item) => {
         const itemState = getItemState(section.title, item);
         const flags: string[] = [];
         if (itemState.na) flags.push('N/A');
         if (itemState.o) flags.push('O');
         if (itemState.desc.trim()) flags.push(itemState.desc.trim());
-        const itemText = `${item}${flags.length ? ` ${flags.join(' — ')}` : ''}`;
-        const wrapped = doc.splitTextToSize(`• ${itemText}`, pageWidth - margin * 2 - 120);
-
-        for (const chunk of wrapped) {
-          if (y > 760) {
-            doc.addPage();
-            y = 56;
-          }
-          doc.text(chunk, margin, y);
-          y += 12;
-        }
-      }
-
-      y += 8;
-    }
+        return `${item}${flags.length ? ` — ${flags.join(' — ')}` : ''}`;
+      })
+    })));
 
     const fileName = `${(form.tenants || 'inspection').replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-inspection-contract.pdf`;
     previewPdfDocument(doc, fileName);

@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { jsPDF } from 'jspdf';
+  import { drawInspectionPdfChecklist, drawInspectionPdfHeader } from '$lib/inspection/inspectionPdf';
   import { buildInspectionHistoryFilter, buildInspectionRecordDetailEntries, isAutoCancelError } from '$lib/inspection/inspectionWorkflow';
   import { pocketbase } from '$lib/pocketbase/PocketBaseProvider';
   import { renterService } from '$lib/services/RenterService';
@@ -93,13 +94,6 @@
     return record.created_by_name || getExpandedName(record.expand?.created_by?.name) || record.created_by || '—';
   };
 
-  const formatPdfDate = (value?: string) => {
-    if (!value) return '—';
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return value;
-    return new Intl.DateTimeFormat('en-US', { month: 'short', day: 'numeric', year: 'numeric' }).format(date);
-  };
-
   const openPdfPreview = (doc: jsPDF, fileName: string) => {
     const pdfBlob = doc.output('blob');
     const url = URL.createObjectURL(pdfBlob);
@@ -137,96 +131,30 @@
     if (!selectedInspection) return;
 
     const doc = new jsPDF({ unit: 'pt', format: 'letter' });
-    const pageWidth = doc.internal.pageSize.getWidth();
     const margin = 52;
-    let y = 52;
-
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(20);
-    doc.text('Inspection Contract', margin, y);
-    y += 24;
-
-    doc.setFont('helvetica', 'normal');
-    doc.setFontSize(10);
-
-    const details = [
-      `Address: ${selectedInspection.property_address || 'Not provided'}`,
-      `Unit: ${selectedInspection.unit_no || 'Not provided'}`,
-      `Tenant(s): ${selectedInspection.tenants || 'Not provided'}`,
-      `Type: ${selectedInspection.type === 'move-out' ? 'Move-out' : 'Move-in'}`,
-      `Move-in date: ${formatPdfDate(selectedInspection.move_in_date)}`,
-      `Move-out date: ${formatPdfDate(selectedInspection.move_out_date)}`,
-      `Workflow stage: ${workflowLabel(selectedInspection.workflow_status)}`,
-      `Created by: ${getCreatedByName(selectedInspection)}`
-    ];
-
-    for (const line of details) {
-      doc.text(line, margin, y);
-      y += 16;
-    }
-
-    const signatureY = y + 20;
-    const drawHistorySignatureRow = (label: string, y: number) => {
-      doc.setFont('helvetica', 'bold');
-      doc.text(label, margin + 12, y + 10);
-      doc.setFont('helvetica', 'normal');
-      doc.text('Signature', margin + 95, y + 10);
-      doc.line(margin + 170, y + 7, pageWidth - margin - 155, y + 7);
-      doc.text('Date', pageWidth - 190, y + 10);
-      doc.line(pageWidth - 150, y + 7, pageWidth - margin - 12, y + 7);
-    };
-
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(9);
-    doc.text('Move-in', margin, signatureY);
-    drawHistorySignatureRow('Manager', signatureY + 16);
-    drawHistorySignatureRow('Tenant', signatureY + 46);
-
-    doc.text('Move-out', margin, signatureY + 88);
-    drawHistorySignatureRow('Manager', signatureY + 104);
-    drawHistorySignatureRow('Tenant', signatureY + 134);
-
-    y = signatureY + 180;
-    doc.setFont('helvetica', 'bold');
-    doc.setFontSize(10);
-    doc.text('Checklist review', margin, y);
-    y += 18;
-    doc.setFont('helvetica', 'normal');
+    drawInspectionPdfHeader(doc, {
+      address: selectedInspection.property_address ?? '', unit: selectedInspection.unit_no ?? '',
+      tenants: selectedInspection.tenants ?? '', moveInDate: selectedInspection.move_in_date,
+      moveOutDate: selectedInspection.move_out_date,
+      metadata: [
+        { label: 'Type', value: selectedInspection.type === 'move-out' ? 'Move-out' : 'Move-in' },
+        { label: 'Workflow stage', value: workflowLabel(selectedInspection.workflow_status) },
+        { label: 'Created by', value: getCreatedByName(selectedInspection) }
+      ]
+    });
 
     const checklistData = parseChecklist(selectedInspection.checklist);
-
-    for (const section of checklistTemplateSections) {
-      if (y > 700) {
-        doc.addPage();
-        y = 56;
-      }
-
-      doc.setFont('helvetica', 'bold');
-      doc.text(section.title, margin, y);
-      y += 14;
-      doc.setFont('helvetica', 'normal');
-
-      for (const item of section.items) {
+    drawInspectionPdfChecklist(doc, checklistTemplateSections.map((section) => ({
+      title: section.title,
+      items: section.items.map((item) => {
         const itemState = checklistData[section.title]?.[item] ?? {} as { na?: boolean; o?: boolean; desc?: string };
         const flags: string[] = [];
         if (itemState.na) flags.push('N/A');
         if (itemState.o) flags.push('O');
         if (itemState.desc?.trim()) flags.push(itemState.desc.trim());
-        const itemText = `${item}${flags.length ? ` ${flags.join(' — ')}` : ''}`;
-        const wrapped = doc.splitTextToSize(`• ${itemText}`, pageWidth - margin * 2 - 120);
-
-        for (const chunk of wrapped) {
-          if (y > 760) {
-            doc.addPage();
-            y = 56;
-          }
-          doc.text(chunk, margin, y);
-          y += 12;
-        }
-      }
-
-      y += 8;
-    }
+        return `${item}${flags.length ? ` — ${flags.join(' — ')}` : ''}`;
+      })
+    })));
 
     const fileName = `${(selectedInspection.tenants || 'inspection').replace(/[^a-z0-9]+/gi, '-').toLowerCase()}-inspection-contract.pdf`;
     openPdfPreview(doc, fileName);

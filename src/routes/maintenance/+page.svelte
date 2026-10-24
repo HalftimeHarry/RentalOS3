@@ -24,7 +24,7 @@
   };
 
   let tenantStatusLoaded = $state(false);
-  let maintenanceRequests = $state<Array<{ id: string; created?: string; problem?: string; image?: string | string[]; tenant?: string; status?: string; updates?: MaintenanceThreadUpdate[]; created_by?: string; updated?: string }>>([]);
+  let maintenanceRequests = $state<Array<{ id: string; created?: string; problem?: string; image?: string | string[]; tenant?: string; status?: string; reply?: string; updates?: MaintenanceThreadUpdate[]; created_by?: string; updated?: string }>>([]);
   let maintenanceLoading = $state(false);
   let maintenanceError = $state('');
   let statusDrafts = $state<Record<string, string>>({});
@@ -78,7 +78,7 @@
 
     return value
       .filter((entry): entry is Record<string, unknown> => !!entry && typeof entry === 'object')
-      .map((entry) => {
+      .map((entry): MaintenanceThreadUpdate => {
         const message = typeof entry.message === 'string' ? entry.message : typeof entry.text === 'string' ? entry.text : '';
         const author = entry.author === 'tenant' || entry.author === 'admin' ? entry.author : 'system';
         const role = entry.role === 'tenant' || entry.role === 'admin' ? entry.role : undefined;
@@ -182,7 +182,7 @@
         filter,
         expand: 'tenant.user,created_by'
       });
-      maintenanceRequests = records as Array<{ id: string; created?: string; problem?: string; image?: string | string[]; tenant?: string; status?: string; updates?: MaintenanceThreadUpdate[]; created_by?: string; updated?: string }>;
+      maintenanceRequests = records as Array<{ id: string; created?: string; problem?: string; image?: string | string[]; tenant?: string; status?: string; reply?: string; updates?: MaintenanceThreadUpdate[]; created_by?: string; updated?: string }>;
       statusDrafts = Object.fromEntries(
         maintenanceRequests.map((request) => [request.id, request.status ?? 'reported'])
       );

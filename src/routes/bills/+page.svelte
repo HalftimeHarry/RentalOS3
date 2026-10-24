@@ -1,24 +1,33 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { goto } from '$app/navigation';
+  import { page } from '$app/state';
   import { Check, FileImage, FileText, Pencil, Plus, Printer, Trash2, X } from '@lucide/svelte';
-  import { pocketbase } from '$lib/pocketbase/PocketBaseProvider';
-  import { billService } from '$lib/services/BillService';
-  import { rentalService } from '$lib/services/RentalService';
-  import { renterService } from '$lib/services/RenterService';
-  import { formatDateForInput, renderDateLabel, normalizeDateOnly, parseDateOnly } from '$lib/models';
-  import type { Bill, BillStatus, Rental } from '$lib/models';
+  import { formatDateForInput, renderDateLabel } from '$lib/models';
+  import type { BillDTO as Bill } from '$lib/modules/billing/application/Billing';
+  import { type PaymentState as BillStatus, dollarsToCents, centsToDollars } from '$lib/modules/billing/domain/Bill';
+  import { submitBillingAction } from '$lib/modules/billing/ui/actions';
+  import ReceiptViewer from '$lib/modules/billing/ui/ReceiptViewer.svelte';
 
-  let bills = $state<Bill[]>([]); let rental = $state<Rental | null>(null); let showForm = $state(false); let editingId = $state<string | undefined>(); let error = $state('');
+  let { data } = $props();
+  let bills = $derived(data.billPage.items);
+  let rental = $derived(data.rental);
+  let showForm = $state(false); let editingId = $state<string | undefined>(); let error = $state('');
   let form = $state({ id: '', rent: 0, sdge: 0, att: 0, total: 0, dueDate: '', status: 'open' as BillStatus, paid: false, paidDate: '', notes: '' });
   let receiptFiles = $state<File[]>([]);
   let existingReceipts = $state<string[]>([]);
   let billQuery = $state('');
-  let billPage = $state({ page: 1, perPage: 10, totalPages: 1, totalItems: 0 });
+  let billPage = $derived(data.billPage);
   let selectedReceiptUrl = $state<string | null>(null);
   let selectedReceiptName = $state('');
-  let renterStatus = $state<'applying' | 'active' | 'in-active'>('applying');
-  let isAdmin = $derived(pocketbase.client.authStore.model?.role === 'admin');
-  let isActiveRenter = $derived(!isAdmin && renterStatus === 'active');
+  let isAdmin = $derived(data.isAdmin);
+  let saving = $state(false);
+  let requestId = 0;
+  $effect(() => { billQuery = data.query; });
+  const formTotal = $derived.by(() => {
+    try {
+      return centsToDollars(dollarsToCents(form.rent) + dollarsToCents(form.sdge) + dollarsToCents(form.att));
+    } catch { return 0; }
+  });
   const money = (value: number) => new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(value);
   const month = (date: string) => renderDateLabel(date, { month: 'long', year: 'numeric' });
   const formatReceiptLabel = (value: string) => {
@@ -32,16 +41,13 @@
     }
     return `${name.slice(0, 16)}…`;
   };
-  const getBillStatus = (bill?: Partial<Bill> | null): BillStatus => {
-    const status = bill?.status ?? (bill?.paid ? 'paid' : 'open');
-    return status === 'paid' || status === 'open' || status === 'overdue' || status === 'void' ? status : 'open';
-  };
+  const getBillStatus = (bill?: Bill | null): BillStatus => bill?.status ?? 'open';
   const currentBill = $derived(bills[0] ?? null);
   const currentBillStatus = $derived(currentBill ? getBillStatus(currentBill) : 'open');
   const isImageReceipt = (value: string) => /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(value);
   const statusTabs = $derived(['all', 'open', 'paid', 'overdue', 'void'] as const);
-  let selectedStatus = $state<'all' | BillStatus>('all');
-  const visibleBills = $derived(selectedStatus === 'all' ? bills : bills.filter((bill) => getBillStatus(bill) === selectedStatus));
+  let selectedStatus = $derived(data.status);
+  const visibleBills = $derived(bills);
 
   function printBill(bill: Bill) {
     const originalTitle = document.title;
@@ -79,60 +85,52 @@
         };
     }
   });
-  const escapeFilterValue = (value: string) => value.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
-
-  async function loadBillsPage(resetPage = false) {
-    if (!rental?.id) return;
-
-    const nextPage = resetPage ? 1 : billPage.page;
-    const searchValue = billQuery.trim();
-    const searchFilter = searchValue
-      ? `notes ~ "${escapeFilterValue(searchValue)}" || id ~ "${escapeFilterValue(searchValue)}" || dueDate ~ "${escapeFilterValue(searchValue)}"`
-      : '';
-
-    const pageResult = await billService.listPage(nextPage, billPage.perPage, {
-      sort: '-dueDate',
-      rentalId: rental.id,
-      filter: searchFilter
-    });
-
-    bills = pageResult.items;
-    billPage = {
-      page: pageResult.page,
-      perPage: pageResult.perPage,
-      totalPages: pageResult.totalPages,
-      totalItems: pageResult.totalItems
-    };
-  }
-
-  onMount(async () => {
+  async function loadBillsPage(resetPage = false, nextPage = billPage.page, status = selectedStatus) {
+    const url = new URL(page.url);
+    url.searchParams.set('page', String(resetPage ? 1 : nextPage));
+    url.searchParams.set('q', billQuery.trim());
+    url.searchParams.set('status', status);
+    const currentRequest = ++requestId;
     try {
-      const renterProfile = await renterService.getCurrent();
-      renterStatus = renterProfile?.status ?? 'applying';
-      if (!isAdmin && renterStatus === 'active') {
-        selectedStatus = 'open';
-      }
-
-      rental = await rentalService.getCurrent();
-      await loadBillsPage(true);
-    } catch (loadError) {
-      console.error('[bills page] failed to load bills', loadError);
-      error = 'Connect PocketBase to load bills.';
+      await goto(url, { keepFocus: true, noScroll: true, replaceState: true });
+    } catch (cause) {
+      if (currentRequest === requestId) error = cause instanceof Error ? cause.message : 'Could not load bills.';
     }
-  });
+  }
   function openForm(bill?: Bill) {
     editingId = bill?.id;
     const status = getBillStatus(bill);
-    existingReceipts = bill?.receipts ?? bill?.recipts ?? [];
+    existingReceipts = bill?.receipts ?? [];
     receiptFiles = [];
     form = bill
       ? { id: bill.id, rent: bill.rent, sdge: bill.sdge, att: bill.att, total: bill.total ?? (bill.rent + bill.sdge + bill.att), dueDate: bill.dueDate, status, paid: status === 'paid', paidDate: bill.paidDate ?? '', notes: bill.notes ?? '' }
       : { id: '', rent: rental?.rent ?? 0, sdge: 0, att: 0, total: (rental?.rent ?? 0), dueDate: '', status: 'open', paid: false, paidDate: '', notes: '' };
     showForm = true;
   }
-  async function save() { if (!rental) return; try { const status: BillStatus = form.status ?? (form.paid ? 'paid' : 'open'); const paidDate = status === 'paid' ? (form.paidDate || formatDateForInput()) : ''; const savedBill = await billService.save({ ...form, id: editingId ?? form.id, rental: rental.id, status, paid: status === 'paid', paidDate, receipts: existingReceipts }, editingId, receiptFiles); await loadBillsPage(true); existingReceipts = Array.isArray((savedBill as Partial<Bill>)?.receipts) ? (savedBill as Partial<Bill>).receipts as string[] : existingReceipts; receiptFiles = []; showForm = false; } catch { error = 'Could not save this bill.'; } }
-  async function markPaid(bill: Bill) { const status: BillStatus = 'paid'; const paidDate = formatDateForInput(); await billService.save({ ...bill, status, paid: true, paidDate }, bill.id); await loadBillsPage(true); }
-  async function remove(bill: Bill) { if (!confirm(`Delete the ${month(bill.dueDate)} bill?`)) return; await billService.delete(bill.id); await loadBillsPage(true); }
+  async function save() {
+    if (!rental || saving) return;
+    saving = true;
+    error = '';
+    try {
+      await submitBillingAction('/bills', 'save', {
+        id: editingId ?? '', createId: editingId ? '' : form.id, rental: rental.id,
+        rent: String(form.rent), sdge: String(form.sdge), att: String(form.att),
+        dueDate: form.dueDate, status: form.status, paidDate: form.paidDate, notes: form.notes
+      }, receiptFiles);
+      receiptFiles = [];
+      showForm = false;
+    } catch (cause) { error = cause instanceof Error ? cause.message : 'Could not save this bill.'; }
+    finally { saving = false; }
+  }
+  async function markPaid(bill: Bill) {
+    try { await submitBillingAction('/bills', 'markPaid', { id: bill.id, rental: bill.rental }); }
+    catch (cause) { error = cause instanceof Error ? cause.message : 'Could not mark this bill paid.'; }
+  }
+  async function remove(bill: Bill) {
+    if (!confirm(`Delete the ${month(bill.dueDate)} bill?`)) return;
+    try { await submitBillingAction('/bills', 'delete', { id: bill.id, rental: bill.rental }); }
+    catch (cause) { error = cause instanceof Error ? cause.message : 'Could not delete this bill.'; }
+  }
   function openReceiptModal(receipt: string) {
     selectedReceiptUrl = receipt;
     selectedReceiptName = receipt.split('/').pop() ?? 'Receipt';
@@ -145,8 +143,35 @@
 <svelte:head><title>Bills · RentalOS3</title></svelte:head>
 <div class="page-header"><div><p class="page-kicker">Monthly costs</p><h1>Bills</h1><p class="muted">A clear record of rent and utilities.</p></div>{#if isAdmin}<button class="button" onclick={() => openForm()}><Plus size={16} /> New bill</button>{/if}</div>
 {#if error}<p class="form-error">{error}</p>{/if}
-{#if showForm}<section class="panel bill-form"><div class="panel-title"><h2>{editingId ? 'Edit bill' : 'New bill'}</h2><button class="icon-button" onclick={() => showForm = false} aria-label="Close"><X size={17} /></button></div><div class="form-grid"><label>ID<input bind:value={form.id} type="text" readonly={!!editingId} /></label><label>Rent<input bind:value={form.rent} type="number" /></label><label>SDG&E<input bind:value={form.sdge} type="number" /></label><label>AT&T<input bind:value={form.att} type="number" /></label><label>Total<input value={money(form.rent + form.sdge + form.att)} type="text" readonly /></label><label>Due date<input bind:value={form.dueDate} type="date" /></label><label>Status<select bind:value={form.status}><option value="open">open</option><option value="paid">paid</option><option value="overdue">overdue</option><option value="void">void</option></select></label></div><label class="notes">Notes<textarea bind:value={form.notes} rows="2"></textarea></label><label class="receipt-upload"><span>Receipts</span><input type="file" accept="image/*,application/pdf" multiple onchange={(event) => { receiptFiles = Array.from(event.currentTarget.files ?? []); error = ''; }} /><div class="chip-list">{#if receiptFiles.length}{#each receiptFiles as file}<span class="chip"><span class="chip-icon">{#if /(png|jpg|jpeg|gif|webp|bmp|svg)$/i.test(file.name)}<FileImage size={12} />{:else}<FileText size={12} />{/if}</span>{file.name}</span>{/each}{:else if existingReceipts.length}{#each existingReceipts as receipt}<a class="chip file-link" href={receipt} target="_blank" rel="noreferrer noopener"><span class="chip-icon">{#if isImageReceipt(receipt)}<FileImage size={12} />{:else}<FileText size={12} />{/if}</span>{receipt.split('/').pop() ?? receipt}</a>{/each}{:else}<span class="muted">No receipts attached</span>{/if}</div></label><p class="form-total">Calculated total <strong>{money(form.rent + form.sdge + form.att)}</strong></p><button class="button" onclick={save}>Save bill</button></section>{/if}
-{#if currentBill || bills.length}
+{#if showForm}
+  <section class="panel bill-form">
+    <div class="panel-title"><h2>{editingId ? 'Edit bill' : 'New bill'}</h2><button class="icon-button" onclick={() => showForm = false} aria-label="Close"><X size={17} /></button></div>
+    <div class="form-grid">
+      <label>ID<input bind:value={form.id} type="text" readonly={!!editingId} /></label>
+      <label>Rent<input bind:value={form.rent} type="number" step="0.01" /></label>
+      <label>SDG&E<input bind:value={form.sdge} type="number" step="0.01" /></label>
+      <label>AT&T<input bind:value={form.att} type="number" step="0.01" /></label>
+      <label>Total<input value={money(formTotal)} type="text" readonly /></label>
+      <label>Due date<input bind:value={form.dueDate} type="date" /></label>
+      <label>Status<select bind:value={form.status}><option value="open">open</option><option value="paid">paid</option><option value="overdue">overdue</option><option value="void">void</option></select></label>
+    </div>
+    <label class="notes">Notes<textarea bind:value={form.notes} rows="2"></textarea></label>
+    <label class="receipt-upload">
+      <span>Receipts</span>
+      <input type="file" accept="image/*,application/pdf" multiple onchange={(event) => { receiptFiles = Array.from(event.currentTarget.files ?? []); error = ''; }} />
+      <div class="chip-list">
+        {#if receiptFiles.length}
+          {#each receiptFiles as file}<span class="chip"><span class="chip-icon">{#if /(png|jpg|jpeg|gif|webp|bmp|svg)$/i.test(file.name)}<FileImage size={12} />{:else}<FileText size={12} />{/if}</span>{file.name}</span>{/each}
+        {:else if existingReceipts.length}
+          {#each existingReceipts as receipt}<a class="chip file-link" href={receipt} target="_blank" rel="noreferrer noopener"><span class="chip-icon">{#if isImageReceipt(receipt)}<FileImage size={12} />{:else}<FileText size={12} />{/if}</span>{receipt.split('/').pop() ?? receipt}</a>{/each}
+        {:else}<span class="muted">No receipts attached</span>{/if}
+      </div>
+    </label>
+    <p class="form-total">Calculated total <strong>{money(formTotal)}</strong></p>
+    <button class="button" onclick={save} disabled={saving}>{saving ? 'Saving...' : 'Save bill'}</button>
+  </section>
+{/if}
+{#if rental}
   {#if shouldShowCurrentBill && currentBill}
     <section class="panel bill-highlight">
       <div>
@@ -177,35 +202,19 @@
     </section>
   {/if}
   {#if selectedReceiptUrl}
-    <div class="receipt-modal-backdrop" onclick={closeReceiptModal} role="presentation">
-      <div class="receipt-modal" onclick={(event) => event.stopPropagation()} role="dialog" aria-modal="true" aria-label={selectedReceiptName}>
-        <div class="receipt-modal-header">
-          <h3>{selectedReceiptName}</h3>
-          <button class="icon-button" type="button" aria-label="Close receipt" onclick={closeReceiptModal}><X size={16} /></button>
-        </div>
-        {#if isImageReceipt(selectedReceiptUrl)}
-          <img class="receipt-preview" src={selectedReceiptUrl} alt={selectedReceiptName} />
-        {:else}
-          <div class="receipt-preview-placeholder">
-            <FileText size={36} />
-            <p>{selectedReceiptName}</p>
-            <a class="button" href={selectedReceiptUrl} target="_blank" rel="noreferrer noopener">Open file</a>
-          </div>
-        {/if}
-      </div>
-    </div>
+    <ReceiptViewer url={selectedReceiptUrl} name={selectedReceiptName} close={closeReceiptModal} />
   {/if}
   <div class="toolbar">
     <div class="status-tabs" aria-label="Bill status filters">
       {#each statusTabs as tab}
-        <button type="button" class:active={selectedStatus === tab} class="status-tab" onclick={() => selectedStatus = tab}>
+        <button type="button" class:active={selectedStatus === tab} class="status-tab" onclick={() => { void loadBillsPage(true, 1, tab); }}>
           {tab === 'all' ? 'All' : tab.charAt(0).toUpperCase() + tab.slice(1)}
         </button>
       {/each}
     </div>
     <label class="search-box">
       <span class="sr-only">Search bills</span>
-      <input bind:value={billQuery} oninput={() => { billPage.page = 1; void loadBillsPage(true); }} placeholder="Search bills" />
+      <input bind:value={billQuery} oninput={() => { void loadBillsPage(true); }} placeholder="Search bills" />
     </label>
   </div>
   {#if visibleBills.length}
@@ -215,9 +224,9 @@
   {/if}
   {#if billPage.totalPages > 1}
     <div class="pagination">
-      <button class="button secondary" type="button" disabled={billPage.page <= 1} onclick={() => { billPage.page = Math.max(1, billPage.page - 1); void loadBillsPage(); }}>Previous</button>
+      <button class="button secondary" type="button" disabled={billPage.page <= 1} onclick={() => { void loadBillsPage(false, billPage.page - 1); }}>Previous</button>
       <span class="page-indicator">Page {billPage.page} of {billPage.totalPages}</span>
-      <button class="button secondary" type="button" disabled={billPage.page >= billPage.totalPages} onclick={() => { billPage.page = Math.min(billPage.totalPages, billPage.page + 1); void loadBillsPage(); }}>Next</button>
+      <button class="button secondary" type="button" disabled={billPage.page >= billPage.totalPages} onclick={() => { void loadBillsPage(false, billPage.page + 1); }}>Next</button>
     </div>
   {/if}
 {:else}
